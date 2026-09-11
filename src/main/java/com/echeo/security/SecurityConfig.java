@@ -76,13 +76,16 @@ public class SecurityConfig {
     }
 
     /**
-     * Autorise le frontend Next.js (dev sur localhost:3000, à adapter en prod
-     * avec le domaine réel du frontend Faroty déployé).
+     * Autorise le frontend Next.js (dev sur localhost:3000 et production sur Vercel).
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of("http://localhost:3000"));
+        configuration.setAllowedOrigins(List.of(
+                "http://localhost:3000",
+                "https://echeo-one.vercel.app",
+                "https://echeo.vercel.app"
+        ));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
@@ -91,4 +94,5 @@ public class SecurityConfig {
         source.registerCorsConfiguration("/**", configuration);
         return source;
     }
+
 }
