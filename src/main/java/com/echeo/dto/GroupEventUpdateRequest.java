@@ -21,12 +21,15 @@ public class GroupEventUpdateRequest {
 
     private String description;
 
-    @NotNull(message = "Le montant cible est obligatoire.")
+    // Optionnel — voir GroupEventRequest.
     @DecimalMin(value = "0.0", inclusive = true, message = "Le montant cible ne peut pas être négatif.")
     private BigDecimal targetAmount;
 
     @NotNull(message = "La date de l'événement est obligatoire.")
     private LocalDate eventDate;
+
+    // Optionnelle, comme sur GroupEventRequest — voir cette classe.
+    private java.time.LocalTime eventTime;
 
     @NotNull(message = "Le type de récurrence est obligatoire.")
     private RepetitionType repetitionType;
@@ -61,6 +64,14 @@ public class GroupEventUpdateRequest {
 
     public void setEventDate(LocalDate eventDate) {
         this.eventDate = eventDate;
+    }
+
+    public java.time.LocalTime getEventTime() {
+        return eventTime;
+    }
+
+    public void setEventTime(java.time.LocalTime eventTime) {
+        this.eventTime = eventTime;
     }
 
     public RepetitionType getRepetitionType() {

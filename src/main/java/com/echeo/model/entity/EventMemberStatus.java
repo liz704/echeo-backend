@@ -44,23 +44,49 @@ public class EventMemberStatus {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "event_id", nullable = false)
-    @JsonIgnoreProperties({"memberStatuses", "group"})
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler", "memberStatuses", "group"})
     private GroupEvent event;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "group_member_id", nullable = false)
-    @JsonIgnoreProperties({"group", "eventStatuses"})
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler", "group", "eventStatuses"})
     private GroupMember groupMember;
 
-    @Column(name = "required_amount", nullable = false, precision = 14, scale = 2)
+    // Optionnels : null pour un événement "sans argent" (voir GroupEvent.hasMoney()).
+    @Column(name = "required_amount", precision = 14, scale = 2)
     private BigDecimal requiredAmount;
 
-    @Column(name = "paid_amount", nullable = false, precision = 14, scale = 2)
-    private BigDecimal paidAmount = BigDecimal.ZERO;
+    @Column(name = "paid_amount", precision = 14, scale = 2)
+    private BigDecimal paidAmount;
 
+    // Statut PENDING par défaut pour un événement avec argent ; surchargé en
+    // NOT_SEEN à la création par GroupService pour un événement sans argent.
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private PaymentStatus status = PaymentStatus.PENDING;
+
+    // --- Suivi "vu/pas vu" (événements sans argent uniquement) -------------
+
+    // Jeton public permettant à un membre externe de marquer le rappel comme
+    // vu via un lien reçu par email, sans authentification (voir
+    // PublicAcknowledgmentController). Généré uniquement pour les
+    // événements sans argent.
+    @Column(name = "public_ack_token", unique = true)
+    private java.util.UUID publicAckToken;
+
+    @Column(name = "seen_at")
+    private java.time.OffsetDateTime seenAt;
+
+    // Anti-doublon des relances : le job de notification tourne toutes les
+    // minutes pour respecter l'heure réglée sur l'événement (event_time),
+    // donc on doit savoir si l'étape courante (ex. "J-7", "J+3 (en retard)")
+    // a déjà été envoyée aujourd'hui pour ce membre avant d'en renvoyer une.
+    // Voir NotificationSchedulerService.
+    @Column(name = "last_reminder_stage", length = 20)
+    private String lastReminderStage;
+
+    @Column(name = "last_reminder_sent_at")
+    private java.time.OffsetDateTime lastReminderSentAt;
 
     // Historique complet des versements liés à ce statut. Suppression
     // en cascade réelle : effacer un statut efface son historique.
@@ -131,6 +157,38 @@ public class EventMemberStatus {
 
     public void setStatus(PaymentStatus status) {
         this.status = status;
+    }
+
+    public String getLastReminderStage() {
+        return lastReminderStage;
+    }
+
+    public void setLastReminderStage(String lastReminderStage) {
+        this.lastReminderStage = lastReminderStage;
+    }
+
+    public java.time.OffsetDateTime getLastReminderSentAt() {
+        return lastReminderSentAt;
+    }
+
+    public void setLastReminderSentAt(java.time.OffsetDateTime lastReminderSentAt) {
+        this.lastReminderSentAt = lastReminderSentAt;
+    }
+
+    public java.util.UUID getPublicAckToken() {
+        return publicAckToken;
+    }
+
+    public void setPublicAckToken(java.util.UUID publicAckToken) {
+        this.publicAckToken = publicAckToken;
+    }
+
+    public java.time.OffsetDateTime getSeenAt() {
+        return seenAt;
+    }
+
+    public void setSeenAt(java.time.OffsetDateTime seenAt) {
+        this.seenAt = seenAt;
     }
 
     public List<PaymentHistory> getPaymentHistory() {

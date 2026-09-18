@@ -88,6 +88,19 @@ public class PaymentController {
     }
 
     /**
+     * Vide en une fois tout l'historique de versements d'une échéance
+     * donnée. Ne modifie ni le statut ni le montant payé de l'échéance —
+     * c'est un nettoyage d'archives, pas une annulation de paiement.
+     */
+    @DeleteMapping("/{eventMemberStatusId}/history")
+    public ResponseEntity<Void> deleteAllHistoryFor(@PathVariable Long eventMemberStatusId) {
+        List<PaymentHistory> entries =
+                paymentHistoryRepository.findByEventMemberStatus_IdOrderByPaidAtDesc(eventMemberStatusId);
+        paymentHistoryRepository.deleteAll(entries);
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
      * Génère un lien de paiement public (valide 7 jours par défaut) pour un
      * EventMemberStatus donné — à envoyer par email/SMS au membre concerné.
      * Le lien final côté frontend sera de la forme /pay/{tokenUuid}, consommé

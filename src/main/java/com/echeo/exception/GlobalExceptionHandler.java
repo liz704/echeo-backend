@@ -54,11 +54,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
     }
 
-    @ExceptionHandler(Exception.class)
+/**@ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
         ErrorResponse error = new ErrorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(), "Internal Server Error", "Une erreur inattendue est survenue."
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
-    }
+    } */
+@ExceptionHandler(Exception.class)
+public ResponseEntity<ErrorResponse> handleGeneric(Exception ex) {
+    // TEMPORAIRE : pour voir l'erreur réelle
+    ex.printStackTrace();
+
+    ErrorResponse error = new ErrorResponse(
+            HttpStatus.INTERNAL_SERVER_ERROR.value(),
+            "Internal Server Error",
+            "Une erreur inattendue est survenue. (" + ex.getClass().getSimpleName() + ": " + ex.getMessage() + ")"
+    );
+    return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+}
+
 }

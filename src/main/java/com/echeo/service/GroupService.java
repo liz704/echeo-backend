@@ -74,8 +74,9 @@ public class GroupService {
         return groupRepository.save(group);
     }
 
+    @Transactional(readOnly = true)
     public Group getGroup(Long groupId) {
-        return groupRepository.findById(groupId)
+        return groupRepository.findByIdWithOwner(groupId)
                 .orElseThrow(() -> new EntityNotFoundException("Group", groupId));
     }
 
@@ -84,6 +85,7 @@ public class GroupService {
      * possède et ceux dont il est membre INSCRIT (un membre externe sans
      * compte n'a évidemment pas de session pour appeler cet endpoint).
      */
+    @Transactional(readOnly = true)
     public List<Group> listMyGroups(Long userId) {
         Set<Group> groups = new LinkedHashSet<>(groupRepository.findByOwner_Id(userId));
         groupMemberRepository.findByUser_Id(userId).forEach(m -> groups.add(m.getGroup()));
@@ -143,8 +145,9 @@ public class GroupService {
         return groupEventRepository.findByGroup_IdOrderByEventDateAsc(groupId);
     }
 
+    @Transactional(readOnly = true)
     public GroupEvent getEvent(Long groupId, Long eventId) {
-        GroupEvent event = groupEventRepository.findById(eventId)
+        GroupEvent event = groupEventRepository.findByIdWithGroup(eventId)
                 .orElseThrow(() -> new EntityNotFoundException("GroupEvent", eventId));
         if (!event.getGroup().getId().equals(groupId)) {
             throw new EntityNotFoundException("GroupEvent", eventId);
@@ -152,6 +155,7 @@ public class GroupService {
         return event;
     }
 
+    @Transactional(readOnly = true)
     public List<EventMemberStatus> listMemberStatuses(Long eventId) {
         if (!groupEventRepository.existsById(eventId)) {
             throw new EntityNotFoundException("GroupEvent", eventId);
@@ -183,12 +187,17 @@ public class GroupService {
         event.setDescription(request.getDescription());
         event.setTargetAmount(request.getTargetAmount());
         event.setEventDate(request.getEventDate());
+        event.setEventTime(request.getEventTime());
         event.setRepetitionType(request.getRepetitionType() != null ? request.getRepetitionType() : RepetitionType.NONE);
         event = groupEventRepository.save(event);
 
         Map<Long, BigDecimal> customAmounts = request.getRequiredAmountsByGroupMemberId();
-        BigDecimal equalShare = request.getTargetAmount()
-                .divide(BigDecimal.valueOf(request.getGroupMemberIds().size()), 2, RoundingMode.HALF_UP);
+        boolean hasMoney = event.hasMoney();
+        // Réparti uniquement si l'événement porte de l'argent : sans ça,
+        // division par le nombre de membres n'a pas de sens.
+        BigDecimal equalShare = hasMoney
+                ? request.getTargetAmount().divide(BigDecimal.valueOf(request.getGroupMemberIds().size()), 2, RoundingMode.HALF_UP)
+                : null;
 
         for (Long groupMemberId : request.getGroupMemberIds()) {
             GroupMember groupMember = groupMemberRepository.findById(groupMemberId)
@@ -199,16 +208,25 @@ public class GroupService {
                         "Le membre " + groupMemberId + " n'appartient pas à ce groupe.");
             }
 
-            BigDecimal required = (customAmounts != null && customAmounts.containsKey(groupMemberId))
-                    ? customAmounts.get(groupMemberId)
-                    : equalShare;
-
             EventMemberStatus status = new EventMemberStatus();
             status.setEvent(event);
             status.setGroupMember(groupMember);
-            status.setRequiredAmount(required);
-            status.setPaidAmount(BigDecimal.ZERO);
-            status.setStatus(PaymentStatus.PENDING);
+
+            if (hasMoney) {
+                BigDecimal required = (customAmounts != null && customAmounts.containsKey(groupMemberId))
+                        ? customAmounts.get(groupMemberId)
+                        : equalShare;
+                status.setRequiredAmount(required);
+                status.setPaidAmount(BigDecimal.ZERO);
+                status.setStatus(PaymentStatus.PENDING);
+            } else {
+                // Événement sans argent : suivi par accusé de lecture.
+                // Un jeton public est généré pour permettre à un membre
+                // externe (sans compte) de marquer le rappel comme vu.
+                status.setStatus(PaymentStatus.NOT_SEEN);
+                status.setPublicAckToken(java.util.UUID.randomUUID());
+            }
+
             eventMemberStatusRepository.save(status);
         }
 
@@ -229,10 +247,20 @@ public class GroupService {
                     "Cet événement a déjà eu lieu ou a lieu aujourd'hui — seul un événement à venir peut être modifié.");
         }
 
+        boolean wasWithMoney = event.hasMoney();
+        boolean staysWithMoney = request.getTargetAmount() != null;
+        if (wasWithMoney != staysWithMoney) {
+            throw new InvalidArgumentException(
+                    "Impossible de changer un événement avec argent en événement sans argent (ou l'inverse) : "
+                            + "les statuts déjà générés pour les membres ne correspondraient plus. "
+                            + "Crée un nouvel événement à la place.");
+        }
+
         event.setTitle(request.getTitle());
         event.setDescription(request.getDescription());
         event.setTargetAmount(request.getTargetAmount());
         event.setEventDate(request.getEventDate());
+        event.setEventTime(request.getEventTime());
         event.setRepetitionType(request.getRepetitionType());
         return groupEventRepository.save(event);
     }
@@ -275,16 +303,17 @@ public class GroupService {
     }
 
     /**
-     * Passe en OVERDUE tout statut encore PENDING/PARTIALLY_PAID dont
-     * l'événement est déjà passé. Les relances en rafale (NotificationSchedulerService)
-     * s'appuient ensuite sur ce statut.
+     * Passe en OVERDUE tout statut encore PENDING/PARTIALLY_PAID (avec argent)
+     * ou NOT_SEEN (sans argent, jamais vu) dont l'événement est déjà passé.
+     * Les relances en rafale (NotificationSchedulerService) s'appuient
+     * ensuite sur ce statut.
      */
     @Transactional
     public void markOverdueStatuses() {
         List<GroupEvent> pastEvents = groupEventRepository.findByEventDateBefore(LocalDate.now());
         for (GroupEvent event : pastEvents) {
             List<EventMemberStatus> unpaid = eventMemberStatusRepository.findByEvent_IdAndStatusIn(
-                    event.getId(), List.of(PaymentStatus.PENDING, PaymentStatus.PARTIALLY_PAID));
+                    event.getId(), List.of(PaymentStatus.PENDING, PaymentStatus.PARTIALLY_PAID, PaymentStatus.NOT_SEEN));
             for (EventMemberStatus status : unpaid) {
                 status.setStatus(PaymentStatus.OVERDUE);
                 eventMemberStatusRepository.save(status);
@@ -322,28 +351,39 @@ public class GroupService {
             next.setDescription(event.getDescription());
             next.setTargetAmount(event.getTargetAmount());
             next.setEventDate(nextDate);
+            next.setEventTime(event.getEventTime());
             next.setRepetitionType(event.getRepetitionType());
             next = groupEventRepository.save(next);
 
             List<EventMemberStatus> previousStatuses = eventMemberStatusRepository.findByEvent_Id(event.getId());
+            boolean hasMoney = event.hasMoney();
 
             for (EventMemberStatus previous : previousStatuses) {
-                BigDecimal baseRequired = previous.getRequiredAmount();
-                // Positif si surplus, négatif si encore dû.
-                BigDecimal carry = previous.getPaidAmount().subtract(previous.getRequiredAmount());
-                BigDecimal newRequired = baseRequired.subtract(carry);
-                if (newRequired.compareTo(BigDecimal.ZERO) < 0) {
-                    newRequired = BigDecimal.ZERO;
-                }
-
                 EventMemberStatus newStatus = new EventMemberStatus();
                 newStatus.setEvent(next);
                 newStatus.setGroupMember(previous.getGroupMember());
-                newStatus.setRequiredAmount(newRequired);
-                newStatus.setPaidAmount(BigDecimal.ZERO);
-                newStatus.setStatus(newRequired.compareTo(BigDecimal.ZERO) == 0
-                        ? PaymentStatus.PAID
-                        : PaymentStatus.PENDING);
+
+                if (hasMoney) {
+                    BigDecimal baseRequired = previous.getRequiredAmount();
+                    // Positif si surplus, négatif si encore dû.
+                    BigDecimal carry = previous.getPaidAmount().subtract(previous.getRequiredAmount());
+                    BigDecimal newRequired = baseRequired.subtract(carry);
+                    if (newRequired.compareTo(BigDecimal.ZERO) < 0) {
+                        newRequired = BigDecimal.ZERO;
+                    }
+                    newStatus.setRequiredAmount(newRequired);
+                    newStatus.setPaidAmount(BigDecimal.ZERO);
+                    newStatus.setStatus(newRequired.compareTo(BigDecimal.ZERO) == 0
+                            ? PaymentStatus.PAID
+                            : PaymentStatus.PENDING);
+                } else {
+                    // Sans argent : chaque occurrence repart avec un accusé
+                    // de lecture neuf (le fait d'avoir vu la précédente ne
+                    // vaut pas pour la suivante) et son propre jeton public.
+                    newStatus.setStatus(PaymentStatus.NOT_SEEN);
+                    newStatus.setPublicAckToken(java.util.UUID.randomUUID());
+                }
+
                 eventMemberStatusRepository.save(newStatus);
             }
 

@@ -60,6 +60,13 @@ public class PersonalReminder {
     @Column(name = "next_occurrence")
     private LocalDate nextOccurrence;
 
+    // Horodatage du dernier envoi effectif du rappel par email (null tant
+    // qu'aucun envoi n'a eu lieu). Remis à null à chaque modification de
+    // date/heure pour que le rappel soit ré-armé. Voir
+    // PersonalReminderNotificationService.
+    @Column(name = "notification_sent_at")
+    private java.time.OffsetDateTime notificationSentAt;
+
     public PersonalReminder() {
     }
 
@@ -147,5 +154,13 @@ public class PersonalReminder {
 
     public void setNextOccurrence(LocalDate nextOccurrence) {
         this.nextOccurrence = nextOccurrence;
+    }
+
+    public java.time.OffsetDateTime getNotificationSentAt() {
+        return notificationSentAt;
+    }
+
+    public void setNotificationSentAt(java.time.OffsetDateTime notificationSentAt) {
+        this.notificationSentAt = notificationSentAt;
     }
 }

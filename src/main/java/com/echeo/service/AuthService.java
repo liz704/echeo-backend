@@ -11,6 +11,8 @@ import com.echeo.model.enums.Role;
 import com.echeo.repository.PasswordResetTokenRepository;
 import com.echeo.repository.UserRepository;
 import com.echeo.security.JwtService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -29,6 +31,7 @@ import java.util.UUID;
 @Service
 public class AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final Duration RESET_TOKEN_VALIDITY = Duration.ofHours(1);
 
     private final UserRepository userRepository;
@@ -157,7 +160,10 @@ public class AuthService {
 
     /**
      * Point d'intégration avec le provider d'emailing réel : envoi effectif
-     * via SMTP (voir EmailService, configuré dans application.yml).
+     * via Brevo (voir EmailService). L'échec d'envoi (ex. clé API Brevo
+     * absente/invalide) est capturé ici pour ne PAS faire planter toute la
+     * requête HTTP — le token est déjà créé en base à ce stade, un échec
+     * d'email ne doit pas empêcher l'utilisateur de réessayer proprement.
      */
     private void sendResetEmail(String email, UUID tokenUuid) {
         String resetLink = frontendBaseUrl + "/reset-password?token=" + tokenUuid;
@@ -167,6 +173,10 @@ public class AuthService {
                 + resetLink + "\n\n"
                 + "Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email.";
 
-        emailService.send(email, "ÉCHÉO — Réinitialisation de votre mot de passe", body);
+        try {
+            emailService.send(email, "ÉCHÉO — Réinitialisation de votre mot de passe", body);
+        } catch (Exception ex) {
+            log.warn("Échec de l'envoi de l'email de réinitialisation à {} : {}", email, ex.getMessage());
+        }
     }
 }

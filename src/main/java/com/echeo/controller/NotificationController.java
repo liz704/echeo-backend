@@ -56,4 +56,24 @@ public class NotificationController {
         notificationLogRepository.deleteById(id);
         return ResponseEntity.noContent().build();
     }
+
+    /**
+     * Vide tout l'historique de notifications de l'utilisateur courant en
+     * une fois (ne supprime que ce qui apparaît dans /history, donc les
+     * notifications correspondant à ses propres contacts email/téléphone).
+     */
+    @DeleteMapping("/history")
+    public ResponseEntity<Void> deleteAll(@AuthenticationPrincipal CustomUserDetails currentUser) {
+        List<String> myContacts = new ArrayList<>();
+        if (currentUser.getUser().getEmail() != null) {
+            myContacts.add(currentUser.getUser().getEmail());
+        }
+        if (currentUser.getUser().getPhone() != null) {
+            myContacts.add(currentUser.getUser().getPhone());
+        }
+
+        List<NotificationLog> mine = notificationLogRepository.findByRecipientContactInOrderBySentAtDesc(myContacts);
+        notificationLogRepository.deleteAll(mine);
+        return ResponseEntity.noContent().build();
+    }
 }

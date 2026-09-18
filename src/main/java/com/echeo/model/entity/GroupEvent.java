@@ -51,11 +51,21 @@ public class GroupEvent {
     @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "target_amount", nullable = false, precision = 14, scale = 2)
+    // Optionnel : absent (null) = événement "sans argent" (simple info à
+    // diffuser au groupe, avec suivi "vu/pas vu" au lieu d'un suivi de
+    // paiement — voir EventMemberStatus).
+    @Column(name = "target_amount", precision = 14, scale = 2)
     private BigDecimal targetAmount;
 
     @Column(name = "event_date", nullable = false)
     private LocalDate eventDate;
+
+    // Heure réglée par le créateur pour cet événement (optionnelle). Si
+    // absente, les relances utilisent une heure par défaut (08:00) — voir
+    // NotificationSchedulerService.DEFAULT_TIME. S'applique à toutes les
+    // relances de l'événement (J-7, J-3, J0, et les relances de retard).
+    @Column(name = "event_time")
+    private java.time.LocalTime eventTime;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "repetition_type", nullable = false, length = 20)
@@ -116,12 +126,29 @@ public class GroupEvent {
         this.targetAmount = targetAmount;
     }
 
+    /**
+     * Un événement "sans argent" n'a pas de montant cible : simple info à
+     * diffuser, suivie par accusé de lecture (NOT_SEEN/SEEN) au lieu d'un
+     * suivi de paiement.
+     */
+    public boolean hasMoney() {
+        return targetAmount != null;
+    }
+
     public LocalDate getEventDate() {
         return eventDate;
     }
 
     public void setEventDate(LocalDate eventDate) {
         this.eventDate = eventDate;
+    }
+
+    public java.time.LocalTime getEventTime() {
+        return eventTime;
+    }
+
+    public void setEventTime(java.time.LocalTime eventTime) {
+        this.eventTime = eventTime;
     }
 
     public RepetitionType getRepetitionType() {

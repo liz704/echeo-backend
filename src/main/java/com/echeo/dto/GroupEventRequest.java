@@ -17,12 +17,17 @@ public class GroupEventRequest {
 
     private String description;
 
-    @NotNull(message = "Le montant cible est obligatoire.")
+    // Optionnel : absent = événement "sans argent" (simple info diffusée au
+    // groupe, suivie par accusé de lecture au lieu d'un suivi de paiement).
     @DecimalMin(value = "0.0", inclusive = true, message = "Le montant cible ne peut pas être négatif.")
     private BigDecimal targetAmount;
 
     @NotNull(message = "La date de l'événement est obligatoire.")
     private LocalDate eventDate;
+
+    // Optionnelle : heure à laquelle les relances de cet événement doivent
+    // être envoyées. Si absente, 08:00 est utilisé par défaut.
+    private java.time.LocalTime eventTime;
 
     // NONE par défaut si non fourni — voir GroupService.
     private RepetitionType repetitionType;
@@ -67,6 +72,14 @@ public class GroupEventRequest {
 
     public void setEventDate(LocalDate eventDate) {
         this.eventDate = eventDate;
+    }
+
+    public java.time.LocalTime getEventTime() {
+        return eventTime;
+    }
+
+    public void setEventTime(java.time.LocalTime eventTime) {
+        this.eventTime = eventTime;
     }
 
     public List<Long> getGroupMemberIds() {

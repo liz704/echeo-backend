@@ -19,21 +19,35 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
- * Tâche planifiée quotidienne de relance des paiements de groupe.
+ * Tâche planifiée de relance des paiements de groupe.
  * Scrute les événements dont l'échéance (event_date) tombe à J-7, J-3 ou J0,
  * et prépare/journalise une relance personnalisée pour chaque membre
  * dont le statut n'est pas encore soldé (PENDING, PARTIALLY_PAID, OVERDUE).
  * Le propriétaire du groupe reçoit une copie de chaque relance, sauf s'il
  * a désactivé cette préférence (Group.notifyOwnerOnReminders).
+ *
+ * Contrairement à une exécution unique quotidienne, ce job tourne toutes les
+ * minutes afin de respecter l'heure précise réglée par le créateur sur
+ * l'événement (GroupEvent.eventTime — 08:00 par défaut si absente). Pour
+ * éviter d'envoyer la même relance en boucle tant que la minute matche,
+ * chaque EventMemberStatus mémorise la dernière étape envoyée
+ * (lastReminderStage / lastReminderSentAt) : une étape donnée ("J-7", "J0",
+ * "J+3 (en retard)"...) n'est envoyée qu'une fois par jour et par membre.
+ * Le filtre "l'heure de déclenchement est déjà passée" (et non "= l'heure
+ * exacte") permet aussi un rattrapage automatique en cas d'indisponibilité
+ * temporaire du serveur.
  */
 @Service
 public class NotificationSchedulerService {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationSchedulerService.class);
+    private static final LocalTime DEFAULT_TIME = LocalTime.of(8, 0);
 
     // Statuts considérés comme "à relancer" : un membre SURPLUS ou PAID n'a plus rien à devoir.
     private static final List<PaymentStatus> RELANCE_STATUSES = List.of(
@@ -56,11 +70,11 @@ public class NotificationSchedulerService {
     }
 
     /**
-     * Exécutée tous les jours à 08h00 (heure du serveur).
-     * Cron Spring : seconde minute heure jour-du-mois mois jour-de-semaine.
+     * Exécutée toutes les minutes (heure du serveur).
      */
-    @Scheduled(cron = "0 0 8 * * *")
-    public void runDailyPaymentReminders() {
+    @Scheduled(cron = "0 * * * * *")
+    @Transactional
+    public void runGroupPaymentReminders() {
         LocalDate today = LocalDate.now();
 
         // Avant l'échéance : rappels préventifs.
@@ -78,20 +92,49 @@ public class NotificationSchedulerService {
 
     /**
      * Traite toutes les échéances (événements de groupe) tombant à la date donnée,
-     * et déclenche une relance pour chaque membre encore redevable.
+     * et déclenche une relance pour chaque membre encore redevable — mais
+     * seulement une fois l'heure réglée sur l'événement atteinte, et une
+     * seule fois par jour par membre pour cette étape (label).
      */
     @Transactional
     public void processEchéance(LocalDate targetDate, String label) {
         List<GroupEvent> events = groupEventRepository.findByEventDate(targetDate);
+        LocalDateTime now = LocalDateTime.now();
 
         for (GroupEvent event : events) {
+            LocalTime effectiveTime = event.getEventTime() != null ? event.getEventTime() : DEFAULT_TIME;
+            LocalDateTime triggerAt = LocalDate.now().atTime(effectiveTime);
+
+            // Pas encore l'heure réglée aujourd'hui : on attend la prochaine minute.
+            if (now.isBefore(triggerAt)) {
+                continue;
+            }
+
             List<EventMemberStatus> unpaidStatuses =
                     eventMemberStatusRepository.findByEvent_IdAndStatusIn(event.getId(), RELANCE_STATUSES);
 
             for (EventMemberStatus status : unpaidStatuses) {
-                sendPaymentReminder(event, status, label);
+                if (alreadySentToday(status, label)) {
+                    continue;
+                }
+                boolean sent = sendPaymentReminder(event, status, label);
+                if (sent) {
+                    // On ne verrouille l'étape que si l'envoi au membre a
+                    // réussi : sinon le job retentera à la prochaine minute.
+                    status.setLastReminderStage(label);
+                    status.setLastReminderSentAt(OffsetDateTime.now());
+                    eventMemberStatusRepository.save(status);
+                }
             }
         }
+    }
+
+    private boolean alreadySentToday(EventMemberStatus status, String label) {
+        if (!label.equals(status.getLastReminderStage())) {
+            return false;
+        }
+        OffsetDateTime last = status.getLastReminderSentAt();
+        return last != null && last.toLocalDate().isEqual(LocalDate.now());
     }
 
     /**
@@ -99,7 +142,7 @@ public class NotificationSchedulerService {
      * (notification_logs), tente l'envoi effectif, puis envoie une copie
      * récapitulative au propriétaire du groupe (sauf préférence contraire).
      */
-    private void sendPaymentReminder(GroupEvent event, EventMemberStatus status, String label) {
+    private boolean sendPaymentReminder(GroupEvent event, EventMemberStatus status, String label) {
         GroupMember member = status.getGroupMember();
         BigDecimal required = status.getRequiredAmount() != null ? status.getRequiredAmount() : BigDecimal.ZERO;
         BigDecimal paid = status.getPaidAmount() != null ? status.getPaidAmount() : BigDecimal.ZERO;
@@ -122,6 +165,8 @@ public class NotificationSchedulerService {
             );
             logAndSend(group.getOwner().getEmail(), ownerMessage);
         }
+
+        return memberLog.getStatus() == NotificationStatus.SENT;
     }
 
     private NotificationLog logAndSend(String recipientContact, String message) {

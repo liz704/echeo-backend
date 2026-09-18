@@ -13,4 +13,9 @@ public interface PersonalReminderRepository extends JpaRepository<PersonalRemind
     // Utile pour un futur module de relance des rappels personnels
     // (même logique de cron que les paiements, sur due_date au lieu de event_date).
     List<PersonalReminder> findByDueDateAndCompletedFalse(LocalDate dueDate);
+
+    // Utilisé par PersonalReminderNotificationService : tous les rappels non
+    // complétés, jamais encore notifiés, dont l'échéance est aujourd'hui ou
+    // déjà passée (couvre le rattrapage si le serveur a été indisponible).
+    List<PersonalReminder> findByCompletedFalseAndNotificationSentAtIsNullAndDueDateLessThanEqual(LocalDate dueDate);
 }

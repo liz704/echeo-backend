@@ -1,33 +1,48 @@
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/echeo1
-    username: echeo_user
-    password: secret123
+    url: jdbc:postgresql://ep-quiet-queen-aermj6cl-pooler.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require
+    username: neondb_owner
+    password: npg_ed1KnpSYW0Xo
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5          # Neon free tier : garde un pool petit
+      minimum-idle: 1
+      idle-timeout: 300000          # 5 minutes
+      max-lifetime: 540000          # 9 minutes (Neon ferme les connexions inactives)
+      connection-timeout: 20000
+      validation-timeout: 5000
+      leak-detection-threshold: 60000
+
   jpa:
     hibernate:
-      ddl-auto: update
+      ddl-auto: validate
     show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # Optionnel mais utile :
+        jdbc:
+          time_zone: UTC
+
   flyway:
     enabled: true
+    baseline-on-migrate: true
     locations: classpath:db/migration
 
 echeo:
   jwt:
-    secret: "change-moi-avec-une-valeur-longue-et-aleatoire-min-32-caracteres"
+    secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 86400000
-  mail:
-    from: chuembouketchemenlizperle.com
-    from-name: "ÉCHÉO"
   brevo:
-    api-key: "xsmtpsib-473a57b539c1a66999f6def3d86f797ee52563cad55d0143d08e4f209cedd9db-ZOBa278wfLcNnWKa"   # Brevo > Settings > SMTP & API > API Keys
+    api-key: ${BREVO_API_KEY:}
+  mail:
+    from: chuembouketchemenlizperle@gmail.com
   frontend:
     base-url: http://localhost:3000
 
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health
-
-server:
-  port: ${PORT:8080}
+logging:
+  level:
+    org.springframework.orm.jpa: DEBUG
+    org.hibernate.orm.boot: TRACE
+    # Tu peux baisser un peu le bruit si tu veux :
+    # com.zaxxer.hikari: INFO

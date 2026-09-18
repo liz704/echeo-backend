@@ -41,13 +41,13 @@ public class GroupMember {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "group_id", nullable = false)
-    @JsonIgnoreProperties({"members", "events"})
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler", "members", "events"})
     private Group group;
 
     // Nullable : absent si membre externe (voir externalFullName/externalEmail).
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
-    @JsonIgnoreProperties({"passwordHash"})
+    @JsonIgnoreProperties({"hibernateLazyInitializer", "handler", "passwordHash"})
     private User user;
 
     @Column(name = "external_full_name")

@@ -34,6 +34,7 @@ public class ReminderService {
         reminder.setId(null);
         reminder.setCompleted(false);
         reminder.setNextOccurrence(null);
+        reminder.setNotificationSentAt(null);
         return reminderRepository.save(reminder);
     }
 
@@ -52,11 +53,20 @@ public class ReminderService {
         PersonalReminder existing = reminderRepository.findById(reminderId)
                 .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));
 
+        boolean scheduleChanged = !java.util.Objects.equals(existing.getDueDate(), updatedData.getDueDate())
+                || !java.util.Objects.equals(existing.getDueTime(), updatedData.getDueTime());
+
         existing.setTitle(updatedData.getTitle());
         existing.setDescription(updatedData.getDescription());
         existing.setDueDate(updatedData.getDueDate());
         existing.setDueTime(updatedData.getDueTime());
         existing.setRepetitionType(updatedData.getRepetitionType());
+
+        // Si la date/heure change, on ré-arme le rappel pour qu'il puisse
+        // être renotifié au nouveau moment, même s'il avait déjà été envoyé.
+        if (scheduleChanged) {
+            existing.setNotificationSentAt(null);
+        }
 
         return reminderRepository.save(existing);
     }
