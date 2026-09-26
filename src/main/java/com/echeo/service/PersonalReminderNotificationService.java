@@ -9,6 +9,7 @@ import com.echeo.repository.NotificationLogRepository;
 import com.echeo.repository.PersonalReminderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,6 +47,9 @@ public class PersonalReminderNotificationService {
     private final PersonalReminderRepository reminderRepository;
     private final NotificationLogRepository notificationLogRepository;
     private final EmailService emailService;
+
+    @Value("${echeo.frontend.base-url:https://echeo-one.vercel.app}")
+    private String frontendBaseUrl;
 
     public PersonalReminderNotificationService(PersonalReminderRepository reminderRepository,
                                                 NotificationLogRepository notificationLogRepository,
@@ -89,6 +93,13 @@ public class PersonalReminderNotificationService {
             return;
         }
 
+        // Anciens rappels (avant V9) peuvent n'avoir aucun jeton : on en génère
+        // un à l'envoi pour que le lien "marquer fait" fonctionne toujours.
+        if (reminder.getPublicCompletionToken() == null) {
+            reminder.setPublicCompletionToken(java.util.UUID.randomUUID());
+            reminderRepository.save(reminder);
+        }
+
         String message = buildReminderMessage(reminder);
 
         NotificationLog notificationLog = new NotificationLog();
@@ -128,6 +139,10 @@ public class PersonalReminderNotificationService {
         message.append(".");
         if (reminder.getDescription() != null && !reminder.getDescription().isBlank()) {
             message.append(" ").append(reminder.getDescription());
+        }
+        if (reminder.getPublicCompletionToken() != null) {
+            String completionLink = frontendBaseUrl + "/reminders/complete/" + reminder.getPublicCompletionToken();
+            message.append(" Clique ici pour marquer ce rappel comme fait : ").append(completionLink);
         }
         return message.toString();
     }

@@ -18,4 +18,12 @@ public interface PersonalReminderRepository extends JpaRepository<PersonalRemind
     // complétés, jamais encore notifiés, dont l'échéance est aujourd'hui ou
     // déjà passée (couvre le rattrapage si le serveur a été indisponible).
     List<PersonalReminder> findByCompletedFalseAndNotificationSentAtIsNullAndDueDateLessThanEqual(LocalDate dueDate);
+
+    // Lien public "marquer fait" depuis l'email — voir PublicReminderController.
+    java.util.Optional<PersonalReminder> findByPublicCompletionToken(java.util.UUID token);
+
+    List<PersonalReminder> findByUser_IdAndCompletedTrue(Long userId);
+
+    void deleteByUser_IdAndCompletedTrue(Long userId);
 }
+

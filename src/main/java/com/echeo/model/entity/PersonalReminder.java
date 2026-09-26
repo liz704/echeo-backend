@@ -67,6 +67,12 @@ public class PersonalReminder {
     @Column(name = "notification_sent_at")
     private java.time.OffsetDateTime notificationSentAt;
 
+    // Jeton public permettant de marquer ce rappel comme fait directement
+    // depuis un lien dans l'email, sans authentification. Généré une seule
+    // fois à la création (voir ReminderService.createReminder).
+    @Column(name = "public_completion_token", unique = true)
+    private java.util.UUID publicCompletionToken;
+
     public PersonalReminder() {
     }
 
@@ -162,5 +168,13 @@ public class PersonalReminder {
 
     public void setNotificationSentAt(java.time.OffsetDateTime notificationSentAt) {
         this.notificationSentAt = notificationSentAt;
+    }
+
+    public java.util.UUID getPublicCompletionToken() {
+        return publicCompletionToken;
+    }
+
+    public void setPublicCompletionToken(java.util.UUID publicCompletionToken) {
+        this.publicCompletionToken = publicCompletionToken;
     }
 }

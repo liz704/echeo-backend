@@ -3,6 +3,12 @@ package com.echeo.service;
 import com.echeo.dto.AddGroupMemberRequest;
 import com.echeo.dto.GroupEventRequest;
 import com.echeo.dto.GroupEventUpdateRequest;
+import com.echeo.dto.GroupHistoryResponse;
+import com.echeo.dto.EventMemberDetailItem;
+import com.echeo.dto.EventDetailResponse;
+import com.echeo.dto.GroupPaymentHistoryItem;
+import com.echeo.model.entity.PaymentHistory;
+import com.echeo.repository.PaymentHistoryRepository;
 import com.echeo.exception.EntityNotFoundException;
 import com.echeo.exception.InvalidArgumentException;
 import com.echeo.model.entity.EventMemberStatus;
@@ -49,17 +55,20 @@ public class GroupService {
     private final GroupEventRepository groupEventRepository;
     private final EventMemberStatusRepository eventMemberStatusRepository;
     private final UserRepository userRepository;
+    private final PaymentHistoryRepository paymentHistoryRepository;
 
     public GroupService(GroupRepository groupRepository,
                          GroupMemberRepository groupMemberRepository,
                          GroupEventRepository groupEventRepository,
                          EventMemberStatusRepository eventMemberStatusRepository,
-                         UserRepository userRepository) {
+                         UserRepository userRepository,
+                         PaymentHistoryRepository paymentHistoryRepository) {
         this.groupRepository = groupRepository;
         this.groupMemberRepository = groupMemberRepository;
         this.groupEventRepository = groupEventRepository;
         this.eventMemberStatusRepository = eventMemberStatusRepository;
         this.userRepository = userRepository;
+        this.paymentHistoryRepository = paymentHistoryRepository;
     }
 
     @Transactional
@@ -95,6 +104,85 @@ public class GroupService {
     public List<GroupMember> listMembers(Long groupId) {
         getGroup(groupId);
         return groupMemberRepository.findByGroup_Id(groupId);
+    }
+
+    /**
+     * Modifie le nom/la description d'un groupe. Seul le propriétaire peut le faire.
+     */
+    @Transactional
+    public Group updateGroupInfo(Long groupId, String name, String description, Long requesterId) {
+        Group group = getGroup(groupId);
+        requireOwner(group, requesterId);
+        group.setName(name);
+        group.setDescription(description);
+        return groupRepository.save(group);
+    }
+
+    /**
+     * Supprime un groupe entier. Les membres, événements, statuts de paiement
+     * et jetons associés sont supprimés en cascade au niveau base de données
+     * (contraintes ON DELETE CASCADE — voir V1__init_schema.sql).
+     */
+    @Transactional
+    public void deleteGroup(Long groupId, Long requesterId) {
+        Group group = getGroup(groupId);
+        requireOwner(group, requesterId);
+        groupRepository.delete(group);
+    }
+
+    /**
+     * Retire un membre du groupe. Supprime d'abord ses statuts de paiement
+     * (par sécurité, au cas où la cascade DB ne couvrirait pas ce chemin),
+     * puis le membre lui-même.
+     */
+    @Transactional
+    public void removeMember(Long groupId, Long memberId, Long requesterId) {
+        Group group = getGroup(groupId);
+        requireOwner(group, requesterId);
+        GroupMember member = groupMemberRepository.findById(memberId)
+                .orElseThrow(() -> new EntityNotFoundException("GroupMember", memberId));
+        if (!member.getGroup().getId().equals(groupId)) {
+            throw new EntityNotFoundException("GroupMember", memberId);
+        }
+        eventMemberStatusRepository.deleteByGroupMember_Id(memberId);
+        groupMemberRepository.delete(member);
+    }
+
+    /**
+     * Supprime un événement de groupe (et ses statuts de paiement associés,
+     * en cascade). Ne touche pas aux autres événements du groupe.
+     */
+    @Transactional
+    public void deleteEvent(Long groupId, Long eventId, Long requesterId) {
+        Group group = getGroup(groupId);
+        requireOwner(group, requesterId);
+        GroupEvent event = getEvent(groupId, eventId);
+        groupEventRepository.delete(event);
+    }
+
+    private void requireOwner(Group group, Long requesterId) {
+        if (!group.getOwner().getId().equals(requesterId)) {
+            throw new InvalidArgumentException("Seul le propriétaire du groupe peut effectuer cette action.");
+        }
+    }
+
+    /**
+     * Marque un rappel de groupe sans argent comme "vu", via le jeton public
+     * reçu par email (voir PublicAcknowledgmentController). Idempotent : si
+     * déjà vu, ne fait que renvoyer l'état actuel sans le modifier — ça évite
+     * qu'un clic répété sur le lien change la date de "vu" à chaque fois.
+     */
+    @Transactional
+    public EventMemberStatus acknowledgeByToken(java.util.UUID token) {
+        EventMemberStatus status = eventMemberStatusRepository.findByPublicAckToken(token)
+                .orElseThrow(() -> new EntityNotFoundException("Lien invalide ou expiré."));
+
+        if (status.getStatus() == PaymentStatus.NOT_SEEN || status.getStatus() == PaymentStatus.OVERDUE) {
+            status.setStatus(PaymentStatus.SEEN);
+            status.setSeenAt(java.time.OffsetDateTime.now());
+            eventMemberStatusRepository.save(status);
+        }
+        return status;
     }
 
     /**
@@ -145,6 +233,124 @@ public class GroupService {
         return groupEventRepository.findByGroup_IdOrderByEventDateAsc(groupId);
     }
 
+    /**
+     * Historique du groupe : événements dont la date est passée, plus tous
+     * les versements enregistrés (du plus récent au plus ancien).
+     */
+    @Transactional(readOnly = true)
+    public GroupHistoryResponse getGroupHistory(Long groupId) {
+        getGroup(groupId);
+        LocalDate today = LocalDate.now();
+        List<GroupEvent> pastEvents =
+                groupEventRepository.findByGroup_IdAndEventDateBeforeOrderByEventDateDesc(groupId, today);
+
+        List<PaymentHistory> rawPayments =
+                paymentHistoryRepository.findByGroupIdOrderByPaidAtDesc(groupId);
+        List<GroupPaymentHistoryItem> payments = rawPayments.stream().map(h -> {
+            GroupPaymentHistoryItem item = new GroupPaymentHistoryItem();
+            item.setId(h.getId());
+            item.setAmountPaid(h.getAmountPaid());
+            item.setPaymentMethod(h.getPaymentMethod());
+            item.setTransactionRef(h.getTransactionRef());
+            item.setPaidAt(h.getPaidAt());
+            if (h.getEventMemberStatus() != null) {
+                item.setEventMemberStatusId(h.getEventMemberStatus().getId());
+                if (h.getEventMemberStatus().getEvent() != null) {
+                    item.setEventId(h.getEventMemberStatus().getEvent().getId());
+                    item.setEventTitle(h.getEventMemberStatus().getEvent().getTitle());
+                }
+                if (h.getEventMemberStatus().getGroupMember() != null) {
+                    item.setMemberFullName(h.getEventMemberStatus().getGroupMember().getContactFullName());
+                }
+            }
+            return item;
+        }).toList();
+
+        return new GroupHistoryResponse(pastEvents, payments);
+    }
+
+    /**
+     * Détail complet d'un événement : infos + suivi indépendant de chaque
+     * membre (statut courant, montants, accusé de lecture, historique des
+     * versements un par un).
+     */
+    @Transactional(readOnly = true)
+    public EventDetailResponse getEventDetail(Long groupId, Long eventId) {
+        GroupEvent event = getEvent(groupId, eventId);
+        List<EventMemberStatus> statuses =
+                eventMemberStatusRepository.findByEvent_IdWithDetails(eventId);
+
+        // Indexe les paiements par status id pour les rattacher à chaque membre.
+        List<PaymentHistory> allPayments =
+                paymentHistoryRepository.findByEventIdOrderByPaidAtDesc(eventId);
+        java.util.Map<Long, List<PaymentHistory>> paymentsByStatus = new java.util.HashMap<>();
+        for (PaymentHistory h : allPayments) {
+            if (h.getEventMemberStatus() == null) continue;
+            paymentsByStatus
+                    .computeIfAbsent(h.getEventMemberStatus().getId(), k -> new java.util.ArrayList<>())
+                    .add(h);
+        }
+
+        EventDetailResponse detail = new EventDetailResponse();
+        detail.setEventId(event.getId());
+        detail.setGroupId(groupId);
+        detail.setTitle(event.getTitle());
+        detail.setDescription(event.getDescription());
+        detail.setTargetAmount(event.getTargetAmount());
+        detail.setWithdrawalFeeAmount(event.getWithdrawalFeeAmount());
+        detail.setEventDate(event.getEventDate());
+        detail.setEventTime(event.getEventTime());
+        detail.setRepetitionType(event.getRepetitionType());
+        detail.setPaused(event.isPaused());
+        detail.setHasMoney(event.hasMoney());
+
+        List<EventMemberDetailItem> members = new java.util.ArrayList<>();
+        for (EventMemberStatus s : statuses) {
+            EventMemberDetailItem item = new EventMemberDetailItem();
+            item.setEventMemberStatusId(s.getId());
+            if (s.getGroupMember() != null) {
+                item.setGroupMemberId(s.getGroupMember().getId());
+                item.setMemberFullName(s.getGroupMember().getContactFullName());
+                item.setMemberEmail(s.getGroupMember().getContactEmail());
+            }
+            item.setStatus(s.getStatus());
+            item.setRequiredAmount(s.getRequiredAmount());
+            item.setPaidAmount(s.getPaidAmount());
+            item.setSeenAt(s.getSeenAt());
+
+            List<PaymentHistory> memberPayments =
+                    paymentsByStatus.getOrDefault(s.getId(), List.of());
+            List<EventMemberDetailItem.PaymentEntry> entries = new java.util.ArrayList<>();
+            for (PaymentHistory h : memberPayments) {
+                EventMemberDetailItem.PaymentEntry e = new EventMemberDetailItem.PaymentEntry();
+                e.setId(h.getId());
+                e.setAmountPaid(h.getAmountPaid());
+                e.setPaymentMethod(h.getPaymentMethod());
+                e.setTransactionRef(h.getTransactionRef());
+                e.setPaidAt(h.getPaidAt());
+                entries.add(e);
+            }
+            item.setPayments(entries);
+            members.add(item);
+        }
+        detail.setMembers(members);
+        return detail;
+    }
+
+    @Transactional(readOnly = true)
+    public List<GroupEvent> listUpcomingEvents(Long groupId) {
+        getGroup(groupId);
+        return groupEventRepository.findByGroup_IdAndEventDateGreaterThanEqualOrderByEventDateAsc(
+                groupId, LocalDate.now());
+    }
+
+    @Transactional(readOnly = true)
+    public List<GroupEvent> listPastEvents(Long groupId) {
+        getGroup(groupId);
+        return groupEventRepository.findByGroup_IdAndEventDateBeforeOrderByEventDateDesc(
+                groupId, LocalDate.now());
+    }
+
     @Transactional(readOnly = true)
     public GroupEvent getEvent(Long groupId, Long eventId) {
         GroupEvent event = groupEventRepository.findByIdWithGroup(eventId)
@@ -160,9 +366,10 @@ public class GroupService {
         if (!groupEventRepository.existsById(eventId)) {
             throw new EntityNotFoundException("GroupEvent", eventId);
         }
-        return eventMemberStatusRepository.findByEvent_IdAndStatusIn(eventId,
-                List.of(PaymentStatus.PENDING, PaymentStatus.PARTIALLY_PAID, PaymentStatus.PAID,
-                        PaymentStatus.SURPLUS, PaymentStatus.OVERDUE));
+        // Tous les statuts : avec argent (PENDING…SURPLUS) ET sans argent
+        // (NOT_SEEN / SEEN). Filtrer uniquement les "impayés" rendait les
+        // événements sans argent invisibles côté UI.
+        return eventMemberStatusRepository.findByEvent_IdWithDetails(eventId);
     }
 
     /**
@@ -188,18 +395,28 @@ public class GroupService {
         event.setTargetAmount(request.getTargetAmount());
         event.setEventDate(request.getEventDate());
         event.setEventTime(request.getEventTime());
+        event.setWithdrawalFeeAmount(request.getWithdrawalFeeAmount());
         event.setRepetitionType(request.getRepetitionType() != null ? request.getRepetitionType() : RepetitionType.NONE);
         event = groupEventRepository.save(event);
 
         Map<Long, BigDecimal> customAmounts = request.getRequiredAmountsByGroupMemberId();
         boolean hasMoney = event.hasMoney();
-        // Réparti uniquement si l'événement porte de l'argent : sans ça,
-        // division par le nombre de membres n'a pas de sens.
-        BigDecimal equalShare = hasMoney
-                ? request.getTargetAmount().divide(BigDecimal.valueOf(request.getGroupMemberIds().size()), 2, RoundingMode.HALF_UP)
-                : null;
+        List<Long> memberIds = request.getGroupMemberIds();
+        int memberCount = memberIds.size();
 
-        for (Long groupMemberId : request.getGroupMemberIds()) {
+        // Pré-calcule les parts égales avec reste d'arrondi sur le dernier
+        // membre (uniquement si pas de montants personnalisés).
+        boolean useEqualShare = hasMoney && (customAmounts == null || customAmounts.isEmpty());
+        BigDecimal equalShare = null;
+        BigDecimal remainderForLast = null;
+        if (useEqualShare) {
+            equalShare = request.getTargetAmount().divide(BigDecimal.valueOf(memberCount), 2, RoundingMode.HALF_UP);
+            BigDecimal assigned = equalShare.multiply(BigDecimal.valueOf(memberCount - 1));
+            remainderForLast = request.getTargetAmount().subtract(assigned);
+        }
+
+        int index = 0;
+        for (Long groupMemberId : memberIds) {
             GroupMember groupMember = groupMemberRepository.findById(groupMemberId)
                     .orElseThrow(() -> new EntityNotFoundException("GroupMember", groupMemberId));
 
@@ -213,9 +430,14 @@ public class GroupService {
             status.setGroupMember(groupMember);
 
             if (hasMoney) {
-                BigDecimal required = (customAmounts != null && customAmounts.containsKey(groupMemberId))
-                        ? customAmounts.get(groupMemberId)
-                        : equalShare;
+                BigDecimal required;
+                if (customAmounts != null && customAmounts.containsKey(groupMemberId)) {
+                    required = customAmounts.get(groupMemberId);
+                } else if (useEqualShare && index == memberCount - 1) {
+                    required = remainderForLast;
+                } else {
+                    required = equalShare;
+                }
                 status.setRequiredAmount(required);
                 status.setPaidAmount(BigDecimal.ZERO);
                 status.setStatus(PaymentStatus.PENDING);
@@ -228,6 +450,7 @@ public class GroupService {
             }
 
             eventMemberStatusRepository.save(status);
+            index++;
         }
 
         return event;
@@ -256,13 +479,73 @@ public class GroupService {
                             + "Crée un nouvel événement à la place.");
         }
 
+        BigDecimal previousTarget = event.getTargetAmount();
+
         event.setTitle(request.getTitle());
         event.setDescription(request.getDescription());
         event.setTargetAmount(request.getTargetAmount());
         event.setEventDate(request.getEventDate());
         event.setEventTime(request.getEventTime());
-        event.setRepetitionType(request.getRepetitionType());
-        return groupEventRepository.save(event);
+        event.setWithdrawalFeeAmount(request.getWithdrawalFeeAmount());
+        if (request.getRepetitionType() != null) {
+            event.setRepetitionType(request.getRepetitionType());
+        }
+        event = groupEventRepository.save(event);
+
+        // Si le montant cible change et qu'aucun paiement n'a encore été
+        // enregistré, on répartit à nouveau equitably entre les membres.
+        // Dès qu'un membre a payé quelque chose, on ne touche plus aux
+        // required_amount (évite de casser un suivi déjà en cours).
+        if (staysWithMoney
+                && previousTarget != null
+                && request.getTargetAmount() != null
+                && previousTarget.compareTo(request.getTargetAmount()) != 0) {
+            redistributeRequiredAmountsIfNoPayments(event);
+        }
+
+        return event;
+    }
+
+    /**
+     * Répartit targetAmount de façon égale entre les membres de l'événement,
+     * uniquement si personne n'a encore payé (paid_amount == 0 pour tous).
+     * Le reste d'arrondi est attribué au dernier membre pour que la somme
+     * des required_amount soit exactement égale au montant cible.
+     */
+    private void redistributeRequiredAmountsIfNoPayments(GroupEvent event) {
+        List<EventMemberStatus> statuses = eventMemberStatusRepository.findByEvent_Id(event.getId());
+        if (statuses.isEmpty()) {
+            return;
+        }
+        boolean anyPayment = statuses.stream()
+                .anyMatch(s -> s.getPaidAmount() != null && s.getPaidAmount().compareTo(BigDecimal.ZERO) > 0);
+        if (anyPayment) {
+            log.info("Montant cible de l'événement {} modifié mais des paiements existent déjà — required_amount non redistribués.",
+                    event.getId());
+            return;
+        }
+
+        BigDecimal target = event.getTargetAmount();
+        int n = statuses.size();
+        BigDecimal equalShare = target.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP);
+        BigDecimal assigned = BigDecimal.ZERO;
+
+        for (int i = 0; i < n; i++) {
+            EventMemberStatus status = statuses.get(i);
+            BigDecimal required;
+            if (i == n - 1) {
+                // Dernier membre : prend le reste pour absorber l'arrondi.
+                required = target.subtract(assigned);
+            } else {
+                required = equalShare;
+                assigned = assigned.add(equalShare);
+            }
+            status.setRequiredAmount(required);
+            status.setStatus(required.compareTo(BigDecimal.ZERO) == 0
+                    ? PaymentStatus.PAID
+                    : PaymentStatus.PENDING);
+            eventMemberStatusRepository.save(status);
+        }
     }
 
     /**
@@ -287,7 +570,13 @@ public class GroupService {
     @Transactional
     public GroupEvent resumeEvent(Long groupId, Long eventId) {
         GroupEvent event = getEvent(groupId, eventId);
+        if (event.getRepetitionType() == RepetitionType.NONE) {
+            throw new InvalidArgumentException("Cet événement n'est pas récurrent, rien à reprendre.");
+        }
         event.setPaused(false);
+        // Si l'échéance est déjà passée et qu'aucune occurrence n'a encore
+        // été générée (nextOccurrence null), le prochain job quotidien
+        // rattrapera automatiquement via generateRecurringOccurrences.
         return groupEventRepository.save(event);
     }
 
@@ -332,67 +621,115 @@ public class GroupService {
      */
     @Transactional
     public void generateRecurringOccurrences() {
+        LocalDate today = LocalDate.now();
         List<GroupEvent> due = groupEventRepository
                 .findByRepetitionTypeNotAndPausedFalseAndNextOccurrenceIsNullAndEventDateLessThanEqual(
-                        RepetitionType.NONE, LocalDate.now());
+                        RepetitionType.NONE, today);
 
-        for (GroupEvent event : due) {
-            LocalDate nextDate = computeNextOccurrenceDate(event.getEventDate(), event.getRepetitionType());
-            if (nextDate == null) {
-                continue;
-            }
+        for (GroupEvent seed : due) {
+            // Rattrapage : si plusieurs échéances ont été manquées (app arrêtée,
+            // etc.), on enchaîne les occurrences jusqu'à dépasser aujourd'hui,
+            // avec report de solde à chaque pas. Garde-fou pour éviter une
+            // boucle infinie en cas de données incohérentes.
+            GroupEvent current = seed;
+            int safety = 0;
+            final int maxCatchUp = 400; // ~1 an de DAILY
 
-            event.setNextOccurrence(nextDate);
-            groupEventRepository.save(event);
+            while (safety++ < maxCatchUp
+                    && !current.isPaused()
+                    && current.getRepetitionType() != RepetitionType.NONE
+                    && current.getNextOccurrence() == null
+                    && !current.getEventDate().isAfter(today)) {
 
-            GroupEvent next = new GroupEvent();
-            next.setGroup(event.getGroup());
-            next.setTitle(event.getTitle());
-            next.setDescription(event.getDescription());
-            next.setTargetAmount(event.getTargetAmount());
-            next.setEventDate(nextDate);
-            next.setEventTime(event.getEventTime());
-            next.setRepetitionType(event.getRepetitionType());
-            next = groupEventRepository.save(next);
-
-            List<EventMemberStatus> previousStatuses = eventMemberStatusRepository.findByEvent_Id(event.getId());
-            boolean hasMoney = event.hasMoney();
-
-            for (EventMemberStatus previous : previousStatuses) {
-                EventMemberStatus newStatus = new EventMemberStatus();
-                newStatus.setEvent(next);
-                newStatus.setGroupMember(previous.getGroupMember());
-
-                if (hasMoney) {
-                    BigDecimal baseRequired = previous.getRequiredAmount();
-                    // Positif si surplus, négatif si encore dû.
-                    BigDecimal carry = previous.getPaidAmount().subtract(previous.getRequiredAmount());
-                    BigDecimal newRequired = baseRequired.subtract(carry);
-                    if (newRequired.compareTo(BigDecimal.ZERO) < 0) {
-                        newRequired = BigDecimal.ZERO;
-                    }
-                    newStatus.setRequiredAmount(newRequired);
-                    newStatus.setPaidAmount(BigDecimal.ZERO);
-                    newStatus.setStatus(newRequired.compareTo(BigDecimal.ZERO) == 0
-                            ? PaymentStatus.PAID
-                            : PaymentStatus.PENDING);
-                } else {
-                    // Sans argent : chaque occurrence repart avec un accusé
-                    // de lecture neuf (le fait d'avoir vu la précédente ne
-                    // vaut pas pour la suivante) et son propre jeton public.
-                    newStatus.setStatus(PaymentStatus.NOT_SEEN);
-                    newStatus.setPublicAckToken(java.util.UUID.randomUUID());
+                LocalDate nextDate = computeNextOccurrenceDate(current.getEventDate(), current.getRepetitionType());
+                if (nextDate == null) {
+                    break;
                 }
 
-                eventMemberStatusRepository.save(newStatus);
+                current.setNextOccurrence(nextDate);
+                groupEventRepository.save(current);
+
+                GroupEvent next = buildNextOccurrenceEvent(current, nextDate);
+                next = groupEventRepository.save(next);
+                copyMemberStatusesToNextOccurrence(current, next);
+
+                log.info("Occurrence suivante générée pour l'événement récurrent {} -> nouvel événement {} ({})",
+                        current.getId(), next.getId(), nextDate);
+
+                // La nouvelle occurrence devient le "courant" pour un éventuel
+                // rattrapage supplémentaire si sa date est encore passée.
+                current = next;
             }
 
-            log.info("Occurrence suivante générée pour l'événement récurrent {} -> nouvel événement {} ({})",
-                    event.getId(), next.getId(), nextDate);
+            if (safety >= maxCatchUp) {
+                log.warn("Rattrapage de récurrence stoppé (plafond {}) pour l'événement seed {}",
+                        maxCatchUp, seed.getId());
+            }
+        }
+    }
+
+    private GroupEvent buildNextOccurrenceEvent(GroupEvent source, LocalDate nextDate) {
+        GroupEvent next = new GroupEvent();
+        next.setGroup(source.getGroup());
+        next.setTitle(source.getTitle());
+        next.setDescription(source.getDescription());
+        next.setTargetAmount(source.getTargetAmount());
+        next.setEventDate(nextDate);
+        next.setEventTime(source.getEventTime());
+        next.setWithdrawalFeeAmount(source.getWithdrawalFeeAmount());
+        next.setRepetitionType(source.getRepetitionType());
+        next.setPaused(false);
+        // nextOccurrence reste null : l'occurrence suivante sera générée
+        // quand cette date sera atteinte (et non en pause).
+        return next;
+    }
+
+    /**
+     * Recopie les membres de l'occurrence précédente vers la suivante, avec
+     * report intelligent du solde (avec argent) ou reset de l'accusé de
+     * lecture (sans argent).
+     */
+    private void copyMemberStatusesToNextOccurrence(GroupEvent previousEvent, GroupEvent nextEvent) {
+        List<EventMemberStatus> previousStatuses =
+                eventMemberStatusRepository.findByEvent_Id(previousEvent.getId());
+        boolean hasMoney = previousEvent.hasMoney();
+
+        for (EventMemberStatus previous : previousStatuses) {
+            EventMemberStatus newStatus = new EventMemberStatus();
+            newStatus.setEvent(nextEvent);
+            newStatus.setGroupMember(previous.getGroupMember());
+
+            if (hasMoney) {
+                BigDecimal baseRequired = previous.getRequiredAmount() != null
+                        ? previous.getRequiredAmount() : BigDecimal.ZERO;
+                BigDecimal paid = previous.getPaidAmount() != null
+                        ? previous.getPaidAmount() : BigDecimal.ZERO;
+                // Positif si surplus, négatif si encore dû.
+                BigDecimal carry = paid.subtract(baseRequired);
+                BigDecimal newRequired = baseRequired.subtract(carry);
+                if (newRequired.compareTo(BigDecimal.ZERO) < 0) {
+                    newRequired = BigDecimal.ZERO;
+                }
+                newStatus.setRequiredAmount(newRequired);
+                newStatus.setPaidAmount(BigDecimal.ZERO);
+                newStatus.setStatus(newRequired.compareTo(BigDecimal.ZERO) == 0
+                        ? PaymentStatus.PAID
+                        : PaymentStatus.PENDING);
+            } else {
+                // Sans argent : chaque occurrence repart avec un accusé
+                // de lecture neuf et son propre jeton public.
+                newStatus.setStatus(PaymentStatus.NOT_SEEN);
+                newStatus.setPublicAckToken(java.util.UUID.randomUUID());
+            }
+
+            eventMemberStatusRepository.save(newStatus);
         }
     }
 
     private LocalDate computeNextOccurrenceDate(LocalDate currentDate, RepetitionType repetitionType) {
+        if (currentDate == null || repetitionType == null) {
+            return null;
+        }
         return switch (repetitionType) {
             case DAILY -> currentDate.plusDays(1);
             case WEEKLY -> currentDate.plusWeeks(1);

@@ -29,6 +29,10 @@ public class GroupEventRequest {
     // être envoyées. Si absente, 08:00 est utilisé par défaut.
     private java.time.LocalTime eventTime;
 
+    // Optionnel : frais de retrait anticipés (Mobile Money/Orange Money) —
+    // voir GroupEvent.withdrawalFeeAmount.
+    private BigDecimal withdrawalFeeAmount;
+
     // NONE par défaut si non fourni — voir GroupService.
     private RepetitionType repetitionType;
 
@@ -80,6 +84,14 @@ public class GroupEventRequest {
 
     public void setEventTime(java.time.LocalTime eventTime) {
         this.eventTime = eventTime;
+    }
+
+    public BigDecimal getWithdrawalFeeAmount() {
+        return withdrawalFeeAmount;
+    }
+
+    public void setWithdrawalFeeAmount(BigDecimal withdrawalFeeAmount) {
+        this.withdrawalFeeAmount = withdrawalFeeAmount;
     }
 
     public List<Long> getGroupMemberIds() {

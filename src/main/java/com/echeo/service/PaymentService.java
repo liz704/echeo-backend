@@ -3,6 +3,7 @@ package com.echeo.service;
 import com.echeo.exception.EntityNotFoundException;
 import com.echeo.exception.InvalidArgumentException;
 import com.echeo.model.entity.EventMemberStatus;
+import com.echeo.model.entity.GroupEvent;
 import com.echeo.model.entity.GroupMember;
 import com.echeo.model.entity.NotificationLog;
 import com.echeo.model.entity.PaymentHistory;
@@ -93,17 +94,25 @@ public class PaymentService {
         }
 
         BigDecimal newPaidAmount = previousPaid.add(amount);
-        int comparison = newPaidAmount.compareTo(requiredAmount);
+
+        // Tolérance "frais de retrait" : un membre qui envoie un peu plus
+        // que le montant requis pour couvrir les frais de retrait du
+        // propriétaire (Mobile Money / Orange Money) ne doit pas être
+        // compté en SURPLUS pour cette marge-là.
+        GroupEvent event = status.getEvent();
+        BigDecimal withdrawalFeeTolerance = (event != null && event.getWithdrawalFeeAmount() != null)
+                ? event.getWithdrawalFeeAmount() : BigDecimal.ZERO;
+        BigDecimal surplusThreshold = requiredAmount.add(withdrawalFeeTolerance);
 
         BigDecimal surplusAmount = BigDecimal.ZERO;
         PaymentStatus newStatus;
-        if (comparison < 0) {
+        if (newPaidAmount.compareTo(requiredAmount) < 0) {
             newStatus = PaymentStatus.PARTIALLY_PAID;
-        } else if (comparison == 0) {
+        } else if (newPaidAmount.compareTo(surplusThreshold) <= 0) {
             newStatus = PaymentStatus.PAID;
         } else {
             newStatus = PaymentStatus.SURPLUS;
-            surplusAmount = newPaidAmount.subtract(requiredAmount);
+            surplusAmount = newPaidAmount.subtract(surplusThreshold);
         }
 
         status.setPaidAmount(newPaidAmount);

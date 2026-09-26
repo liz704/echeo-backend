@@ -101,6 +101,15 @@ public class ReminderController {
         return ResponseEntity.ok(history);
     }
 
+    /**
+     * Vide tout l'historique des rappels terminés de l'utilisateur courant.
+     */
+    @DeleteMapping("/history")
+    public ResponseEntity<Void> deleteHistory(@AuthenticationPrincipal CustomUserDetails currentUser) {
+        reminderService.deleteHistoryForUser(currentUser.getUserId());
+        return ResponseEntity.noContent().build();
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id,
                                          @AuthenticationPrincipal CustomUserDetails currentUser) {

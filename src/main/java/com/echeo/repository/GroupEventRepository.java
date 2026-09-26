@@ -21,6 +21,12 @@ public interface GroupEventRepository extends JpaRepository<GroupEvent, Long> {
 
     List<GroupEvent> findByGroup_IdOrderByEventDateAsc(Long groupId);
 
+    /** Événements passés du groupe (historique), du plus récent au plus ancien. */
+    List<GroupEvent> findByGroup_IdAndEventDateBeforeOrderByEventDateDesc(Long groupId, LocalDate date);
+
+    /** Événements à venir (ou du jour), du plus proche au plus lointain. */
+    List<GroupEvent> findByGroup_IdAndEventDateGreaterThanEqualOrderByEventDateAsc(Long groupId, LocalDate date);
+
     // Événements récurrents dont l'échéance est passée ou atteinte, pas en
     // pause, et pour lesquels l'occurrence suivante n'a pas encore été créée.
     List<GroupEvent> findByRepetitionTypeNotAndPausedFalseAndNextOccurrenceIsNullAndEventDateLessThanEqual(

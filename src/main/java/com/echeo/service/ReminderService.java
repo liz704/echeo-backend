@@ -35,6 +35,7 @@ public class ReminderService {
         reminder.setCompleted(false);
         reminder.setNextOccurrence(null);
         reminder.setNotificationSentAt(null);
+        reminder.setPublicCompletionToken(java.util.UUID.randomUUID());
         return reminderRepository.save(reminder);
     }
 
@@ -88,6 +89,12 @@ public class ReminderService {
         PersonalReminder current = reminderRepository.findById(reminderId)
                 .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));
 
+        // Idempotent : un second "marquer fait" (double-clic app ou lien email)
+        // ne doit pas régénérer une occurrence récurrente.
+        if (current.isCompleted()) {
+            return current;
+        }
+
         current.setCompleted(true);
 
         RepetitionType repetition = current.getRepetitionType();
@@ -107,6 +114,7 @@ public class ReminderService {
             nextReminder.setRepetitionType(repetition);
             nextReminder.setCompleted(false);
             nextReminder.setNextOccurrence(null);
+            nextReminder.setPublicCompletionToken(java.util.UUID.randomUUID());
 
             reminderRepository.save(nextReminder);
             return current;
@@ -131,10 +139,34 @@ public class ReminderService {
     }
 
     /**
+     * Vide l'historique des rappels terminés de l'utilisateur
+     * (ne touche pas aux rappels actifs).
+     */
+    @Transactional
+    public void deleteHistoryForUser(Long userId) {
+        reminderRepository.deleteByUser_IdAndCompletedTrue(userId);
+    }
+
+    /**
      * Récupère un rappel appartenant strictement à l'utilisateur courant.
      * Empêche un utilisateur A de lire/modifier le rappel d'un utilisateur B
      * via une simple devinette d'identifiant.
      */
+    /**
+     * Variante de markAsCompleted() via le jeton public du lien "marquer
+     * fait" reçu par email (voir PublicReminderController). Idempotent : si
+     * déjà complété, ne fait rien et renvoie l'état actuel.
+     */
+    @Transactional
+    public PersonalReminder completeByPublicToken(java.util.UUID token) {
+        PersonalReminder reminder = reminderRepository.findByPublicCompletionToken(token)
+                .orElseThrow(() -> new EntityNotFoundException("Lien invalide ou expiré."));
+        if (reminder.isCompleted()) {
+            return reminder;
+        }
+        return markAsCompleted(reminder.getId());
+    }
+
     public PersonalReminder getOwnedReminder(Long reminderId, Long userId) {
         PersonalReminder reminder = reminderRepository.findById(reminderId)
                 .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));

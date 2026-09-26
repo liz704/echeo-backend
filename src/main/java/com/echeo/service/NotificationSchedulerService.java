@@ -5,6 +5,7 @@ import com.echeo.model.entity.Group;
 import com.echeo.model.entity.GroupEvent;
 import com.echeo.model.entity.GroupMember;
 import com.echeo.model.entity.NotificationLog;
+import com.echeo.model.entity.PaymentToken;
 import com.echeo.model.enums.NotificationStatus;
 import com.echeo.model.enums.NotificationType;
 import com.echeo.model.enums.PaymentStatus;
@@ -13,11 +14,13 @@ import com.echeo.repository.GroupEventRepository;
 import com.echeo.repository.NotificationLogRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -54,19 +57,35 @@ public class NotificationSchedulerService {
             PaymentStatus.PENDING, PaymentStatus.PARTIALLY_PAID, PaymentStatus.OVERDUE
     );
 
+    // Idem pour un événement sans argent : NOT_SEEN et OVERDUE (jamais vu à
+    // temps) sont à relancer ; SEEN n'a plus besoin de l'être.
+    private static final List<PaymentStatus> RELANCE_STATUSES_SANS_ARGENT = List.of(
+            PaymentStatus.NOT_SEEN, PaymentStatus.OVERDUE
+    );
+
+    // Un lien de paiement généré pour une relance reste valable jusqu'à la
+    // prochaine étape (au pire 7 jours, pour la relance J-7).
+    private static final Duration PAYMENT_LINK_VALIDITY = Duration.ofDays(10);
+
     private final GroupEventRepository groupEventRepository;
     private final EventMemberStatusRepository eventMemberStatusRepository;
     private final NotificationLogRepository notificationLogRepository;
     private final EmailService emailService;
+    private final PaymentService paymentService;
+
+    @Value("${echeo.frontend.base-url:https://echeo-one.vercel.app}")
+    private String frontendBaseUrl;
 
     public NotificationSchedulerService(GroupEventRepository groupEventRepository,
                                          EventMemberStatusRepository eventMemberStatusRepository,
                                          NotificationLogRepository notificationLogRepository,
-                                         EmailService emailService) {
+                                         EmailService emailService,
+                                         PaymentService paymentService) {
         this.groupEventRepository = groupEventRepository;
         this.eventMemberStatusRepository = eventMemberStatusRepository;
         this.notificationLogRepository = notificationLogRepository;
         this.emailService = emailService;
+        this.paymentService = paymentService;
     }
 
     /**
@@ -110,14 +129,18 @@ public class NotificationSchedulerService {
                 continue;
             }
 
-            List<EventMemberStatus> unpaidStatuses =
-                    eventMemberStatusRepository.findByEvent_IdAndStatusIn(event.getId(), RELANCE_STATUSES);
+            boolean hasMoney = event.hasMoney();
+            List<PaymentStatus> relevantStatuses = hasMoney ? RELANCE_STATUSES : RELANCE_STATUSES_SANS_ARGENT;
+            List<EventMemberStatus> toRemind =
+                    eventMemberStatusRepository.findByEvent_IdAndStatusIn(event.getId(), relevantStatuses);
 
-            for (EventMemberStatus status : unpaidStatuses) {
+            for (EventMemberStatus status : toRemind) {
                 if (alreadySentToday(status, label)) {
                     continue;
                 }
-                boolean sent = sendPaymentReminder(event, status, label);
+                boolean sent = hasMoney
+                        ? sendPaymentReminder(event, status, label)
+                        : sendAcknowledgmentReminder(event, status, label);
                 if (sent) {
                     // On ne verrouille l'étape que si l'envoi au membre a
                     // réussi : sinon le job retentera à la prochaine minute.
@@ -151,8 +174,20 @@ public class NotificationSchedulerService {
             remaining = BigDecimal.ZERO;
         }
 
+        // Lien de paiement public : un jeton frais à chaque relance (le
+        // précédent, s'il existe, reste valable jusqu'à expiration — pas
+        // besoin de l'invalider, un jeton payé une fois se marque "used").
+        String paymentLink;
+        try {
+            PaymentToken token = paymentService.generatePaymentToken(status.getId(), PAYMENT_LINK_VALIDITY);
+            paymentLink = frontendBaseUrl + "/pay/" + token.getTokenUuid();
+        } catch (Exception ex) {
+            log.warn("Échec de la génération du lien de paiement pour le statut {} : {}", status.getId(), ex.getMessage());
+            paymentLink = null;
+        }
+
         String memberMessage = buildReminderMessage(
-                member.getContactFullName(), remaining, required, event.getTitle(), label);
+                member.getContactFullName(), remaining, required, event.getTitle(), label, paymentLink);
 
         NotificationLog memberLog = logAndSend(resolveRecipientContact(member), memberMessage);
 
@@ -162,6 +197,43 @@ public class NotificationSchedulerService {
                     "Relance envoyée à %s (%s) pour l'événement '%s' : reste %s FCFA sur %s FCFA (échéance %s).",
                     member.getContactFullName(), resolveRecipientContact(member), event.getTitle(),
                     formatAmount(remaining), formatAmount(required), label
+            );
+            logAndSend(group.getOwner().getEmail(), ownerMessage);
+        }
+
+        return memberLog.getStatus() == NotificationStatus.SENT;
+    }
+
+    /**
+     * Rappel pour un événement SANS argent : pas de montant, juste
+     * l'information et un lien "j'ai vu ce message" (accusé de lecture, pas
+     * de confirmation supplémentaire nécessaire côté membre).
+     */
+    private boolean sendAcknowledgmentReminder(GroupEvent event, EventMemberStatus status, String label) {
+        GroupMember member = status.getGroupMember();
+
+        String ackLink = status.getPublicAckToken() != null
+                ? frontendBaseUrl + "/ack/" + status.getPublicAckToken()
+                : null;
+
+        StringBuilder message = new StringBuilder();
+        message.append("Bonjour ").append(member.getContactFullName()).append(", ceci est un rappel : \"")
+                .append(event.getTitle()).append("\"");
+        if (event.getDescription() != null && !event.getDescription().isBlank()) {
+            message.append(" — ").append(event.getDescription());
+        }
+        message.append(" (échéance ").append(label).append(").");
+        if (ackLink != null) {
+            message.append(" Clique ici pour confirmer que tu as bien vu ce message : ").append(ackLink);
+        }
+
+        NotificationLog memberLog = logAndSend(resolveRecipientContact(member), message.toString());
+
+        Group group = event.getGroup();
+        if (group.isNotifyOwnerOnReminders()) {
+            String ownerMessage = String.format(
+                    "Rappel envoyé à %s (%s) pour l'événement '%s' (échéance %s, pas encore vu).",
+                    member.getContactFullName(), resolveRecipientContact(member), event.getTitle(), label
             );
             logAndSend(group.getOwner().getEmail(), ownerMessage);
         }
@@ -190,11 +262,16 @@ public class NotificationSchedulerService {
      * l'événement 'Cotisation mariage' (échéance J-3)."
      */
     private String buildReminderMessage(String fullName, BigDecimal remaining, BigDecimal total,
-                                         String eventTitle, String label) {
-        return String.format(
+                                         String eventTitle, String label, String paymentLink) {
+        StringBuilder message = new StringBuilder();
+        message.append(String.format(
                 "Bonjour %s, il vous reste %s FCFA sur %s FCFA pour l'événement '%s' (échéance %s).",
                 fullName, formatAmount(remaining), formatAmount(total), eventTitle, label
-        );
+        ));
+        if (paymentLink != null) {
+            message.append(" Payez directement ici : ").append(paymentLink);
+        }
+        return message.toString();
     }
 
     private String formatAmount(BigDecimal amount) {

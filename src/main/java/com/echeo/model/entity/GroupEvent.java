@@ -67,6 +67,13 @@ public class GroupEvent {
     @Column(name = "event_time")
     private java.time.LocalTime eventTime;
 
+    // Montant optionnel de frais de retrait anticipés (Mobile Money/Orange
+    // Money prélèvent des frais au retrait). Un membre qui envoie
+    // required_amount + ce montant n'est pas compté en SURPLUS pour cette
+    // marge — voir PaymentService.recordPayment.
+    @Column(name = "withdrawal_fee_amount", precision = 14, scale = 2)
+    private BigDecimal withdrawalFeeAmount;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "repetition_type", nullable = false, length = 20)
     private RepetitionType repetitionType = RepetitionType.NONE;
@@ -149,6 +156,14 @@ public class GroupEvent {
 
     public void setEventTime(java.time.LocalTime eventTime) {
         this.eventTime = eventTime;
+    }
+
+    public BigDecimal getWithdrawalFeeAmount() {
+        return withdrawalFeeAmount;
+    }
+
+    public void setWithdrawalFeeAmount(BigDecimal withdrawalFeeAmount) {
+        this.withdrawalFeeAmount = withdrawalFeeAmount;
     }
 
     public RepetitionType getRepetitionType() {

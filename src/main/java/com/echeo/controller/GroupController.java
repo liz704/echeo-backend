@@ -4,6 +4,8 @@ import com.echeo.dto.AddGroupMemberRequest;
 import com.echeo.dto.GroupCreateRequest;
 import com.echeo.dto.GroupEventRequest;
 import com.echeo.dto.GroupEventUpdateRequest;
+import com.echeo.dto.EventDetailResponse;
+import com.echeo.dto.GroupHistoryResponse;
 import com.echeo.model.entity.EventMemberStatus;
 import com.echeo.model.entity.Group;
 import com.echeo.model.entity.GroupEvent;
@@ -14,6 +16,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -60,6 +63,22 @@ public class GroupController {
         return ResponseEntity.ok(groupService.getGroup(groupId));
     }
 
+    @PutMapping("/{groupId}")
+    public ResponseEntity<Group> updateGroup(@PathVariable Long groupId,
+                                              @Valid @RequestBody GroupCreateRequest request,
+                                              @AuthenticationPrincipal CustomUserDetails currentUser) {
+        Group updated = groupService.updateGroupInfo(
+                groupId, request.getName(), request.getDescription(), currentUser.getUserId());
+        return ResponseEntity.ok(updated);
+    }
+
+    @DeleteMapping("/{groupId}")
+    public ResponseEntity<Void> deleteGroup(@PathVariable Long groupId,
+                                             @AuthenticationPrincipal CustomUserDetails currentUser) {
+        groupService.deleteGroup(groupId, currentUser.getUserId());
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/{groupId}/members")
     public ResponseEntity<GroupMember> addMember(@PathVariable Long groupId,
                                                   @Valid @RequestBody AddGroupMemberRequest request) {
@@ -77,6 +96,13 @@ public class GroupController {
         return ResponseEntity.ok(groupService.listMembers(groupId));
     }
 
+    @DeleteMapping("/{groupId}/members/{memberId}")
+    public ResponseEntity<Void> removeMember(@PathVariable Long groupId, @PathVariable Long memberId,
+                                              @AuthenticationPrincipal CustomUserDetails currentUser) {
+        groupService.removeMember(groupId, memberId, currentUser.getUserId());
+        return ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/{groupId}/events")
     public ResponseEntity<GroupEvent> createEvent(@PathVariable Long groupId,
                                                    @Valid @RequestBody GroupEventRequest request) {
@@ -89,9 +115,28 @@ public class GroupController {
         return ResponseEntity.ok(groupService.listEvents(groupId));
     }
 
+    /**
+     * Historique du groupe : événements passés + tous les versements
+     * enregistrés (du plus récent au plus ancien).
+     */
+    @GetMapping("/{groupId}/history")
+    public ResponseEntity<GroupHistoryResponse> groupHistory(@PathVariable Long groupId) {
+        return ResponseEntity.ok(groupService.getGroupHistory(groupId));
+    }
+
     @GetMapping("/events/{eventId}/statuses")
     public ResponseEntity<List<EventMemberStatus>> listMemberStatuses(@PathVariable Long eventId) {
         return ResponseEntity.ok(groupService.listMemberStatuses(eventId));
+    }
+
+    /**
+     * Détail d'un événement avec le suivi indépendant de chaque membre
+     * (statut + historique des versements / accusé de lecture).
+     */
+    @GetMapping("/{groupId}/events/{eventId}/detail")
+    public ResponseEntity<EventDetailResponse> eventDetail(@PathVariable Long groupId,
+                                                            @PathVariable Long eventId) {
+        return ResponseEntity.ok(groupService.getEventDetail(groupId, eventId));
     }
 
     /**
@@ -102,6 +147,13 @@ public class GroupController {
     public ResponseEntity<GroupEvent> updateEvent(@PathVariable Long groupId, @PathVariable Long eventId,
                                                    @Valid @RequestBody GroupEventUpdateRequest request) {
         return ResponseEntity.ok(groupService.updateUpcomingEvent(groupId, eventId, request));
+    }
+
+    @DeleteMapping("/{groupId}/events/{eventId}")
+    public ResponseEntity<Void> deleteEvent(@PathVariable Long groupId, @PathVariable Long eventId,
+                                             @AuthenticationPrincipal CustomUserDetails currentUser) {
+        groupService.deleteEvent(groupId, eventId, currentUser.getUserId());
+        return ResponseEntity.noContent().build();
     }
 
     /**

@@ -31,6 +31,9 @@ public class GroupEventUpdateRequest {
     // Optionnelle, comme sur GroupEventRequest — voir cette classe.
     private java.time.LocalTime eventTime;
 
+    // Optionnel — voir GroupEvent.withdrawalFeeAmount.
+    private BigDecimal withdrawalFeeAmount;
+
     @NotNull(message = "Le type de récurrence est obligatoire.")
     private RepetitionType repetitionType;
 
@@ -72,6 +75,14 @@ public class GroupEventUpdateRequest {
 
     public void setEventTime(java.time.LocalTime eventTime) {
         this.eventTime = eventTime;
+    }
+
+    public BigDecimal getWithdrawalFeeAmount() {
+        return withdrawalFeeAmount;
+    }
+
+    public void setWithdrawalFeeAmount(BigDecimal withdrawalFeeAmount) {
+        this.withdrawalFeeAmount = withdrawalFeeAmount;
     }
 
     public RepetitionType getRepetitionType() {

@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -64,7 +65,24 @@ public class PaymentController {
      */
     @GetMapping("/me")
     public ResponseEntity<List<EventMemberStatus>> myStatuses(@AuthenticationPrincipal CustomUserDetails currentUser) {
-        return ResponseEntity.ok(eventMemberStatusRepository.findByGroupMember_User_IdOrderByIdDesc(currentUser.getUserId()));
+        List<EventMemberStatus> list =
+                eventMemberStatusRepository.findByGroupMember_User_IdWithDetails(currentUser.getUserId());
+        list.sort(Comparator.comparing(EventMemberStatus::getId).reversed());
+        return ResponseEntity.ok(list);
+    }
+
+    /**
+     * Échéances des groupes dont l'utilisateur est propriétaire
+     * (membres inscrits OU externes). C'est ce que la page "Paiements"
+     * affiche en priorité pour un organisateur.
+     */
+    @GetMapping("/managed")
+    public ResponseEntity<List<EventMemberStatus>> managedStatuses(
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        List<EventMemberStatus> list =
+                eventMemberStatusRepository.findManagedByOwnerId(currentUser.getUserId());
+        list.sort(Comparator.comparing(EventMemberStatus::getId).reversed());
+        return ResponseEntity.ok(list);
     }
 
     @GetMapping("/{eventMemberStatusId}/history")

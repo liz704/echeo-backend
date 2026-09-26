@@ -6,5 +6,6 @@ package com.echeo.model.enums;
 public enum PaymentMethod {
     CASH,
     MOBILE_MONEY,
+    ORANGE_MONEY,
     CARD
 }
