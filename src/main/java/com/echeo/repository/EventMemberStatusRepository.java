@@ -63,7 +63,7 @@ public interface EventMemberStatusRepository extends JpaRepository<EventMemberSt
         JOIN FETCH s.groupMember gm
         LEFT JOIN FETCH gm.user
         JOIN FETCH s.event e
-        JOIN FETCH e.group g
+        JOIN e.group g
         WHERE g.owner.id = :ownerId
         """)
     List<EventMemberStatus> findManagedByOwnerId(@Param("ownerId") Long ownerId);
