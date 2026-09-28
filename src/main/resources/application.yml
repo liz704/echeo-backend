@@ -33,12 +33,13 @@ echeo:
   jwt:
     secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 86400000
+  # Ne mettez PAS la vraie clé ici, utilisez la variable d'environnement :
   brevo:
-    api-key: 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
+    api-key: ${BREVO_API_KEY}
   mail:
     from: chuembouketchemenlizperle@gmail.com
   frontend:
-    base-url: http://localhost:3000
+    base-url: https://echeo-one.vercel.app
 
 logging:
   level:
