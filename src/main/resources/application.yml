@@ -33,16 +33,18 @@ echeo:
   jwt:
     secret: 404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970
     expiration-ms: 86400000
-  # Ne mettez PAS la vraie clé ici, utilisez la variable d'environnement :
   brevo:
-    api-key: ${BREVO_API_KEY}
+    api-key: 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
   mail:
     from: chuembouketchemenlizperle@gmail.com
   frontend:
-    base-url: https://echeo-one.vercel.app
+    #base-url: http://localhost:3000
+    base-url:  http://echeo-one.vercel.app
 
 logging:
   level:
+    com.echeo: INFO
+    com.echeo.service.EmailService: DEBUG
     org.springframework.orm.jpa: DEBUG
     org.hibernate.orm.boot: TRACE
     # Tu peux baisser un peu le bruit si tu veux :

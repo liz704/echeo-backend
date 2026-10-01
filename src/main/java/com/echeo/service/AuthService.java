@@ -174,9 +174,11 @@ public class AuthService {
                 + "Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email.";
 
         try {
-            emailService.send(email, "ÉCHÉO — Réinitialisation de votre mot de passe", body);
+            String messageId = emailService.send(email, "ÉCHÉO — Réinitialisation de votre mot de passe", body);
+            log.info("Email de réinitialisation accepté par Brevo pour {} (messageId={})", email, messageId);
         } catch (Exception ex) {
-            log.warn("Échec de l'envoi de l'email de réinitialisation à {} : {}", email, ex.getMessage());
+            // Stack complète + message pour diagnostiquer (clé API, sender non vérifié, etc.)
+            log.error("Échec de l'envoi de l'email de réinitialisation à {} : {}", email, ex.getMessage(), ex);
         }
     }
 }

@@ -1,0 +1,19 @@
+# Copie ce fichier en application-local.yml (ne le commit PAS)
+# puis lance avec : --spring.profiles.active=local
+# Ou mieux : définis les variables d'environnement / IntelliJ Run Config.
+
+spring:
+  datasource:
+    url: jdbc:postgresql://HOST/neondb?sslmode=require
+    username: neondb_owner
+    password: TON_MOT_DE_PASSE
+
+echeo:
+  jwt:
+    secret: UNE_CLE_LONGUE_ALEATOIRE
+  brevo:
+    api-key: ta-cle-brevo
+  mail:
+    from: ton@email.com
+  frontend:
+    base-url: http://localhost:3000

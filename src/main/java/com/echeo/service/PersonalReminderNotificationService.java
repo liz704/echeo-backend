@@ -114,8 +114,8 @@ public class PersonalReminderNotificationService {
             notificationLog.setProviderMessageId(messageId);
             notificationLog.setStatus(NotificationStatus.SENT);
         } catch (Exception ex) {
-            log.warn("Échec de l'envoi du rappel personnel {} à {} : {}",
-                    reminder.getId(), user.getEmail(), ex.getMessage());
+            log.error("Échec de l'envoi du rappel personnel {} à {} : {}",
+                    reminder.getId(), user.getEmail(), ex.getMessage(), ex);
             notificationLog.setStatus(NotificationStatus.FAILED);
             // On ne marque PAS notificationSentAt si l'envoi échoue : le job
             // retentera à la prochaine minute (nouveau rattrapage).

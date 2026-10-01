@@ -304,8 +304,8 @@ public class NotificationSchedulerService {
                 notificationLog.setProviderMessageId(messageId);
                 return true;
             } catch (Exception ex) {
-                log.warn("Échec de l'envoi de la relance email à {} : {}",
-                        notificationLog.getRecipientContact(), ex.getMessage());
+                log.error("Échec de l'envoi de la relance email à {} : {}",
+                        notificationLog.getRecipientContact(), ex.getMessage(), ex);
                 return false;
             }
         }
