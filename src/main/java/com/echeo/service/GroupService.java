@@ -10,6 +10,7 @@ import com.echeo.dto.GroupPaymentHistoryItem;
 import com.echeo.model.entity.PaymentHistory;
 import com.echeo.repository.PaymentHistoryRepository;
 import com.echeo.exception.EntityNotFoundException;
+import com.echeo.util.ContactValidation;
 import com.echeo.exception.InvalidArgumentException;
 import com.echeo.model.entity.EventMemberStatus;
 import com.echeo.model.entity.Group;
@@ -47,6 +48,8 @@ import java.util.Set;
  */
 @Service
 public class GroupService {
+
+    private static final java.time.ZoneId ZONE_DOUALA = java.time.ZoneId.of("Africa/Douala");
 
     private static final Logger log = LoggerFactory.getLogger(GroupService.class);
 
@@ -221,8 +224,9 @@ public class GroupService {
                 throw new InvalidArgumentException("Un membre avec cet email fait déjà partie du groupe.");
             }
             member.setExternalFullName(request.getFullName());
-            member.setExternalEmail(request.getEmail());
-            member.setExternalPhone(request.getPhone());
+            ContactValidation.validateEmailFormat(request.getEmail());
+            member.setExternalEmail(request.getEmail().trim().toLowerCase());
+            member.setExternalPhone(ContactValidation.normalizeAndValidatePhone(request.getPhone()));
         }
 
         return groupMemberRepository.save(member);
@@ -240,7 +244,7 @@ public class GroupService {
     @Transactional(readOnly = true)
     public GroupHistoryResponse getGroupHistory(Long groupId) {
         getGroup(groupId);
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(ZONE_DOUALA);
         List<GroupEvent> pastEvents =
                 groupEventRepository.findByGroup_IdAndEventDateBeforeOrderByEventDateDesc(groupId, today);
 
@@ -341,14 +345,14 @@ public class GroupService {
     public List<GroupEvent> listUpcomingEvents(Long groupId) {
         getGroup(groupId);
         return groupEventRepository.findByGroup_IdAndEventDateGreaterThanEqualOrderByEventDateAsc(
-                groupId, LocalDate.now());
+                groupId, LocalDate.now(ZONE_DOUALA));
     }
 
     @Transactional(readOnly = true)
     public List<GroupEvent> listPastEvents(Long groupId) {
         getGroup(groupId);
         return groupEventRepository.findByGroup_IdAndEventDateBeforeOrderByEventDateDesc(
-                groupId, LocalDate.now());
+                groupId, LocalDate.now(ZONE_DOUALA));
     }
 
     @Transactional(readOnly = true)
@@ -465,7 +469,7 @@ public class GroupService {
     public GroupEvent updateUpcomingEvent(Long groupId, Long eventId, GroupEventUpdateRequest request) {
         GroupEvent event = getEvent(groupId, eventId);
 
-        if (!event.getEventDate().isAfter(LocalDate.now())) {
+        if (!event.getEventDate().isAfter(LocalDate.now(ZONE_DOUALA))) {
             throw new InvalidArgumentException(
                     "Cet événement a déjà eu lieu ou a lieu aujourd'hui — seul un événement à venir peut être modifié.");
         }
@@ -585,7 +589,12 @@ public class GroupService {
     // génération des occurrences récurrentes dues.
     // ========================================================================
 
-    @Scheduled(cron = "0 0 7 * * *")
+    /**
+     * Toutes les minutes (pas une fois à 07:00) : sur Render free le job
+     * 07:00 est souvent raté si l'instance dort. Avec un cron minutaire +
+     * fuseau Africa/Douala, le rattrapage se fait dès le réveil.
+     */
+    @Scheduled(cron = "0 * * * * *")
     public void runDailyGroupEventLifecycle() {
         markOverdueStatuses();
         generateRecurringOccurrences();
@@ -599,7 +608,7 @@ public class GroupService {
      */
     @Transactional
     public void markOverdueStatuses() {
-        List<GroupEvent> pastEvents = groupEventRepository.findByEventDateBefore(LocalDate.now());
+        List<GroupEvent> pastEvents = groupEventRepository.findByEventDateBefore(LocalDate.now(ZONE_DOUALA));
         for (GroupEvent event : pastEvents) {
             List<EventMemberStatus> unpaid = eventMemberStatusRepository.findByEvent_IdAndStatusIn(
                     event.getId(), List.of(PaymentStatus.PENDING, PaymentStatus.PARTIALLY_PAID, PaymentStatus.NOT_SEEN));
@@ -621,7 +630,7 @@ public class GroupService {
      */
     @Transactional
     public void generateRecurringOccurrences() {
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(ZONE_DOUALA);
         List<GroupEvent> due = groupEventRepository
                 .findByRepetitionTypeNotAndPausedFalseAndNextOccurrenceIsNullAndEventDateLessThanEqual(
                         RepetitionType.NONE, today);

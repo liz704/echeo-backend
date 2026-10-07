@@ -6,6 +6,7 @@ import com.echeo.dto.UserResponse;
 import com.echeo.security.CustomUserDetails;
 import com.echeo.service.AuthService;
 import com.echeo.service.UserService;
+import com.echeo.service.WeekPlanService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -28,10 +29,12 @@ public class UserController {
 
     private final UserService userService;
     private final AuthService authService;
+    private final WeekPlanService weekPlanService;
 
-    public UserController(UserService userService, AuthService authService) {
+    public UserController(UserService userService, AuthService authService, WeekPlanService weekPlanService) {
         this.userService = userService;
         this.authService = authService;
+        this.weekPlanService = weekPlanService;
     }
 
     @GetMapping("/me")
@@ -42,7 +45,24 @@ public class UserController {
     @PutMapping("/me")
     public ResponseEntity<UserResponse> updateMyProfile(@Valid @RequestBody UpdateProfileRequest request,
                                                           @AuthenticationPrincipal CustomUserDetails currentUser) {
-        var updated = userService.updateProfile(currentUser.getUserId(), request.getFullName(), request.getPhone());
+        var updated = userService.updateProfile(currentUser.getUserId(), request.getFullName(), request.getPhone(), request.getPreferredLocale());
+        return ResponseEntity.ok(UserResponse.from(updated));
+    }
+
+    @PutMapping("/me/week-plan")
+    public ResponseEntity<UserResponse> updateWeekPlan(@RequestBody Map<String, Object> body,
+                                                        @AuthenticationPrincipal CustomUserDetails currentUser) {
+        boolean enabled = Boolean.TRUE.equals(body.get("enabled"))
+                || "true".equalsIgnoreCase(String.valueOf(body.get("enabled")));
+        int day = 1;
+        if (body.get("day") instanceof Number n) {
+            day = n.intValue();
+        }
+        java.time.LocalTime sendTime = java.time.LocalTime.of(8, 0);
+        if (body.get("sendTime") != null) {
+            sendTime = java.time.LocalTime.parse(String.valueOf(body.get("sendTime")));
+        }
+        var updated = weekPlanService.updateWeekPlanSettings(currentUser.getUserId(), enabled, day, sendTime);
         return ResponseEntity.ok(UserResponse.from(updated));
     }
 

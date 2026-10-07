@@ -1,6 +1,7 @@
 package com.echeo.service;
 
 import com.echeo.exception.EntityNotFoundException;
+import com.echeo.util.ContactValidation;
 import com.echeo.model.entity.User;
 import com.echeo.repository.UserRepository;
 import org.springframework.stereotype.Service;
@@ -27,10 +28,16 @@ public class UserService {
     }
 
     @Transactional
-    public User updateProfile(Long userId, String fullName, String phone) {
+    public User updateProfile(Long userId, String fullName, String phone, String preferredLocale) {
         User user = getProfile(userId);
         user.setFullName(fullName);
-        user.setPhone(phone);
+        user.setPhone(ContactValidation.normalizeAndValidatePhone(phone));
+        if (preferredLocale != null) {
+            String loc = preferredLocale.trim().toLowerCase();
+            if (loc.equals("en") || loc.equals("fr")) {
+                user.setPreferredLocale(loc);
+            }
+        }
         return userRepository.save(user);
     }
 }

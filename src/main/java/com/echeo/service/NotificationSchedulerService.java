@@ -94,19 +94,101 @@ public class NotificationSchedulerService {
     @Scheduled(cron = "0 * * * * *")
     @Transactional
     public void runGroupPaymentReminders() {
-        LocalDate today = LocalDate.now();
+        java.time.ZoneId zone = java.time.ZoneId.of("Africa/Douala");
+        LocalDate today = LocalDate.now(zone);
 
-        // Avant l'échéance : rappels préventifs.
-        processEchéance(today.plusDays(7), "J-7");
-        processEchéance(today.plusDays(3), "J-3");
-        processEchéance(today, "J0");
+        // Avant l'échéance : rappels préventifs (date exacte).
+        processEchéance(today.plusDays(7), "J-7", zone);
+        processEchéance(today.plusDays(3), "J-3", zone);
+        processEchéance(today, "J0", zone);
 
-        // Après l'échéance : relances en rafale pour les impayés (le
-        // passage en OVERDUE est fait juste avant, à 7h, par
-        // GroupService.markOverdueStatuses — voir son cron).
-        processEchéance(today.minusDays(1), "J+1 (en retard)");
-        processEchéance(today.minusDays(3), "J+3 (en retard)");
-        processEchéance(today.minusDays(7), "J+7 (en retard)");
+        // Après l'échéance : TOUS les événements en retard (impayé / partiel),
+        // une relance par jour jusqu'au paiement (rattrapage si le serveur dormait).
+        processAllOverdue(today, zone);
+    }
+
+    /**
+     * Relance quotidienne pour tout événement dont la date est passée et dont
+     * des membres sont encore PENDING / PARTIALLY_PAID / OVERDUE (ou NOT_SEEN
+     * sans argent). Une seule fois par jour et par membre (lastReminderSentAt).
+     */
+    @Transactional
+    public void processAllOverdue(LocalDate today, java.time.ZoneId zone) {
+        List<GroupEvent> overdueEvents = groupEventRepository.findByEventDateBefore(today);
+        LocalDateTime now = LocalDateTime.now(zone);
+
+        for (GroupEvent event : overdueEvents) {
+            long daysLate = java.time.temporal.ChronoUnit.DAYS.between(event.getEventDate(), today);
+            if (daysLate < 1) {
+                continue;
+            }
+            // Jours ciblés : 1, 3, 5, 7, puis chaque jour à partir de J+7,
+            // et après J+21 une fois par semaine (J+28, J+35…).
+            // + rattrapage : si le serveur a dormi un jour clé, on envoie dès
+            // le prochain réveil (label basé sur le vrai nombre de jours de retard).
+            if (!shouldSendOverdueToday(daysLate)) {
+                continue;
+            }
+
+            String label = "J+" + daysLate + " (en retard)";
+            LocalTime effectiveTime = event.getEventTime() != null ? event.getEventTime() : DEFAULT_TIME;
+            LocalDateTime triggerAt = today.atTime(effectiveTime);
+            if (now.isBefore(triggerAt)) {
+                continue;
+            }
+
+            boolean hasMoney = event.hasMoney();
+            List<PaymentStatus> relevantStatuses = hasMoney ? RELANCE_STATUSES : RELANCE_STATUSES_SANS_ARGENT;
+            List<EventMemberStatus> toRemind =
+                    eventMemberStatusRepository.findByEvent_IdAndStatusIn(event.getId(), relevantStatuses);
+
+            for (EventMemberStatus status : toRemind) {
+                // Une relance max par jour calendaire (WAT), quel que soit le label.
+                if (alreadySentAnyToday(status, zone)) {
+                    continue;
+                }
+                boolean sent = hasMoney
+                        ? sendPaymentReminder(event, status, label)
+                        : sendAcknowledgmentReminder(event, status, label);
+                if (sent) {
+                    status.setLastReminderStage(label);
+                    status.setLastReminderSentAt(OffsetDateTime.now(zone));
+                    eventMemberStatusRepository.save(status);
+                    log.info("Relance retard envoyée: event={}, memberStatus={}, {}",
+                            event.getId(), status.getId(), label);
+                }
+            }
+        }
+    }
+
+    /**
+     * J+1, J+3, J+5, J+7, puis tous les jours jusqu'à J+21, puis hebdo.
+     * Pour le rattrapage après sommeil : si on a dépassé un jalon sans envoi
+     * (ex. réveil à J+4), on envoie quand même (daysLate correspond à un
+     * jour "actif" ou on force l'envoi si aucun envoi depuis > 1 jour — géré
+     * par alreadySentAnyToday + shouldSend).
+     */
+    private boolean shouldSendOverdueToday(long daysLate) {
+        if (daysLate == 1 || daysLate == 3 || daysLate == 5 || daysLate == 7) {
+            return true;
+        }
+        if (daysLate > 7 && daysLate <= 21) {
+            return true; // quotidien entre J+8 et J+21
+        }
+        if (daysLate > 21) {
+            return (daysLate - 21) % 7 == 0; // J+28, J+35…
+        }
+        // J+2, J+4, J+6 : aussi pour ne pas perdre les retards si le serveur
+        // a dormi le jour J+1 / J+3 / J+5.
+        return daysLate == 2 || daysLate == 4 || daysLate == 6;
+    }
+
+    private boolean alreadySentAnyToday(EventMemberStatus status, java.time.ZoneId zone) {
+        OffsetDateTime last = status.getLastReminderSentAt();
+        if (last == null) {
+            return false;
+        }
+        return last.atZoneSameInstant(zone).toLocalDate().isEqual(LocalDate.now(zone));
     }
 
     /**
@@ -116,13 +198,13 @@ public class NotificationSchedulerService {
      * seule fois par jour par membre pour cette étape (label).
      */
     @Transactional
-    public void processEchéance(LocalDate targetDate, String label) {
+    public void processEchéance(LocalDate targetDate, String label, java.time.ZoneId zone) {
         List<GroupEvent> events = groupEventRepository.findByEventDate(targetDate);
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(zone);
 
         for (GroupEvent event : events) {
             LocalTime effectiveTime = event.getEventTime() != null ? event.getEventTime() : DEFAULT_TIME;
-            LocalDateTime triggerAt = LocalDate.now().atTime(effectiveTime);
+            LocalDateTime triggerAt = LocalDate.now(zone).atTime(effectiveTime);
 
             // Pas encore l'heure réglée aujourd'hui : on attend la prochaine minute.
             if (now.isBefore(triggerAt)) {
@@ -157,7 +239,11 @@ public class NotificationSchedulerService {
             return false;
         }
         OffsetDateTime last = status.getLastReminderSentAt();
-        return last != null && last.toLocalDate().isEqual(LocalDate.now());
+        if (last == null) {
+            return false;
+        }
+        java.time.ZoneId zone = java.time.ZoneId.of("Africa/Douala");
+        return last.atZoneSameInstant(zone).toLocalDate().isEqual(LocalDate.now(zone));
     }
 
     /**
@@ -165,6 +251,20 @@ public class NotificationSchedulerService {
      * (notification_logs), tente l'envoi effectif, puis envoie une copie
      * récapitulative au propriétaire du groupe (sauf préférence contraire).
      */
+
+    private String resolveMemberLocale(GroupMember member) {
+        if (member != null && member.getUser() != null && member.getUser().getPreferredLocale() != null) {
+            return member.getUser().getPreferredLocale();
+        }
+        return "fr";
+    }
+
+    private String frontendBase() {
+        String base = frontendBaseUrl == null || frontendBaseUrl.isBlank()
+                ? "https://echeo-one.vercel.app" : frontendBaseUrl;
+        return base.replaceAll("/+$", "");
+    }
+
     private boolean sendPaymentReminder(GroupEvent event, EventMemberStatus status, String label) {
         GroupMember member = status.getGroupMember();
         BigDecimal required = status.getRequiredAmount() != null ? status.getRequiredAmount() : BigDecimal.ZERO;
@@ -180,25 +280,30 @@ public class NotificationSchedulerService {
         String paymentLink;
         try {
             PaymentToken token = paymentService.generatePaymentToken(status.getId(), PAYMENT_LINK_VALIDITY);
-            paymentLink = frontendBaseUrl + "/pay/" + token.getTokenUuid();
+            paymentLink = frontendBase() + "/pay/" + token.getTokenUuid();
         } catch (Exception ex) {
             log.warn("Échec de la génération du lien de paiement pour le statut {} : {}", status.getId(), ex.getMessage());
             paymentLink = null;
         }
 
+        String locale = resolveMemberLocale(member);
         String memberMessage = buildReminderMessage(
-                member.getContactFullName(), remaining, required, event.getTitle(), label, paymentLink);
+                member.getContactFullName(), remaining, required, event.getTitle(), label, paymentLink, locale);
 
-        NotificationLog memberLog = logAndSend(resolveRecipientContact(member), memberMessage);
+        NotificationLog memberLog = logAndSend(resolveRecipientContact(member), memberMessage, locale);
 
         Group group = event.getGroup();
         if (group.isNotifyOwnerOnReminders()) {
-            String ownerMessage = String.format(
-                    "Relance envoyée à %s (%s) pour l'événement '%s' : reste %s FCFA sur %s FCFA (échéance %s).",
-                    member.getContactFullName(), resolveRecipientContact(member), event.getTitle(),
-                    formatAmount(remaining), formatAmount(required), label
-            );
-            logAndSend(group.getOwner().getEmail(), ownerMessage);
+            String ownerLocale = group.getOwner() != null ? group.getOwner().getPreferredLocale() : "fr";
+            boolean en = ownerLocale != null && ownerLocale.equalsIgnoreCase("en");
+            String ownerMessage = en
+                    ? String.format("Reminder sent to %s (%s) for '%s': %s FCFA left of %s FCFA (due %s).",
+                        member.getContactFullName(), resolveRecipientContact(member), event.getTitle(),
+                        formatAmount(remaining), formatAmount(required), label)
+                    : String.format("Relance envoyée à %s (%s) pour l'événement '%s' : reste %s FCFA sur %s FCFA (échéance %s).",
+                        member.getContactFullName(), resolveRecipientContact(member), event.getTitle(),
+                        formatAmount(remaining), formatAmount(required), label);
+            logAndSend(group.getOwner().getEmail(), ownerMessage, ownerLocale);
         }
 
         return memberLog.getStatus() == NotificationStatus.SENT;
@@ -213,35 +318,52 @@ public class NotificationSchedulerService {
         GroupMember member = status.getGroupMember();
 
         String ackLink = status.getPublicAckToken() != null
-                ? frontendBaseUrl + "/ack/" + status.getPublicAckToken()
+                ? frontendBase() + "/ack/" + status.getPublicAckToken()
                 : null;
 
+        String locale = resolveMemberLocale(member);
+        boolean en = locale.equalsIgnoreCase("en");
         StringBuilder message = new StringBuilder();
-        message.append("Bonjour ").append(member.getContactFullName()).append(", ceci est un rappel : \"")
-                .append(event.getTitle()).append("\"");
-        if (event.getDescription() != null && !event.getDescription().isBlank()) {
-            message.append(" — ").append(event.getDescription());
-        }
-        message.append(" (échéance ").append(label).append(").");
-        if (ackLink != null) {
-            message.append(" Clique ici pour confirmer que tu as bien vu ce message : ").append(ackLink);
+        if (en) {
+            message.append("Hello ").append(member.getContactFullName()).append(", this is a reminder: \"")
+                    .append(event.getTitle()).append("\"");
+            if (event.getDescription() != null && !event.getDescription().isBlank()) {
+                message.append(" — ").append(event.getDescription());
+            }
+            message.append(" (due ").append(label).append(").");
+            if (ackLink != null) {
+                message.append(" Click here to confirm you have seen this message: ").append(ackLink);
+            }
+        } else {
+            message.append("Bonjour ").append(member.getContactFullName()).append(", ceci est un rappel : \"")
+                    .append(event.getTitle()).append("\"");
+            if (event.getDescription() != null && !event.getDescription().isBlank()) {
+                message.append(" — ").append(event.getDescription());
+            }
+            message.append(" (échéance ").append(label).append(").");
+            if (ackLink != null) {
+                message.append(" Clique ici pour confirmer que tu as bien vu ce message : ").append(ackLink);
+            }
         }
 
-        NotificationLog memberLog = logAndSend(resolveRecipientContact(member), message.toString());
+        NotificationLog memberLog = logAndSend(resolveRecipientContact(member), message.toString(), locale);
 
         Group group = event.getGroup();
         if (group.isNotifyOwnerOnReminders()) {
-            String ownerMessage = String.format(
-                    "Rappel envoyé à %s (%s) pour l'événement '%s' (échéance %s, pas encore vu).",
-                    member.getContactFullName(), resolveRecipientContact(member), event.getTitle(), label
-            );
-            logAndSend(group.getOwner().getEmail(), ownerMessage);
+            String ownerLocale = group.getOwner() != null ? group.getOwner().getPreferredLocale() : "fr";
+            boolean ownerEn = ownerLocale != null && ownerLocale.equalsIgnoreCase("en");
+            String ownerMessage = ownerEn
+                    ? String.format("Reminder sent to %s (%s) for '%s' (due %s, not seen yet).",
+                        member.getContactFullName(), resolveRecipientContact(member), event.getTitle(), label)
+                    : String.format("Rappel envoyé à %s (%s) pour l'événement '%s' (échéance %s, pas encore vu).",
+                        member.getContactFullName(), resolveRecipientContact(member), event.getTitle(), label);
+            logAndSend(group.getOwner().getEmail(), ownerMessage, ownerLocale);
         }
 
         return memberLog.getStatus() == NotificationStatus.SENT;
     }
 
-    private NotificationLog logAndSend(String recipientContact, String message) {
+    private NotificationLog logAndSend(String recipientContact, String message, String locale) {
         NotificationLog notificationLog = new NotificationLog();
         notificationLog.setRecipientContact(recipientContact);
         notificationLog.setType(NotificationType.EMAIL);
@@ -262,14 +384,26 @@ public class NotificationSchedulerService {
      * l'événement 'Cotisation mariage' (échéance J-3)."
      */
     private String buildReminderMessage(String fullName, BigDecimal remaining, BigDecimal total,
-                                         String eventTitle, String label, String paymentLink) {
+                                         String eventTitle, String label, String paymentLink,
+                                         String locale) {
+        boolean en = locale != null && locale.equalsIgnoreCase("en");
         StringBuilder message = new StringBuilder();
-        message.append(String.format(
-                "Bonjour %s, il vous reste %s FCFA sur %s FCFA pour l'événement '%s' (échéance %s).",
-                fullName, formatAmount(remaining), formatAmount(total), eventTitle, label
-        ));
-        if (paymentLink != null) {
-            message.append(" Payez directement ici : ").append(paymentLink);
+        if (en) {
+            message.append(String.format(
+                    "Hello %s, you still owe %s FCFA out of %s FCFA for '%s' (due %s).",
+                    fullName, formatAmount(remaining), formatAmount(total), eventTitle, label
+            ));
+            if (paymentLink != null) {
+                message.append(" Pay here: ").append(paymentLink);
+            }
+        } else {
+            message.append(String.format(
+                    "Bonjour %s, il vous reste %s FCFA sur %s FCFA pour l'événement '%s' (échéance %s).",
+                    fullName, formatAmount(remaining), formatAmount(total), eventTitle, label
+            ));
+            if (paymentLink != null) {
+                message.append(" Payez directement ici : ").append(paymentLink);
+            }
         }
         return message.toString();
     }
@@ -296,9 +430,12 @@ public class NotificationSchedulerService {
     private boolean dispatch(NotificationLog notificationLog) {
         if (notificationLog.getType() == NotificationType.EMAIL) {
             try {
+                boolean en = notificationLog.getMessageContent() != null
+                        && notificationLog.getMessageContent().startsWith("Hello ");
+                String subject = en ? "ÉCHÉO — Payment reminder" : "ÉCHÉO — Rappel de paiement";
                 String messageId = emailService.send(
                         notificationLog.getRecipientContact(),
-                        "ÉCHÉO — Rappel de paiement",
+                        subject,
                         notificationLog.getMessageContent()
                 );
                 notificationLog.setProviderMessageId(messageId);

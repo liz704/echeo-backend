@@ -11,6 +11,7 @@ import com.echeo.model.enums.Role;
 import com.echeo.repository.PasswordResetTokenRepository;
 import com.echeo.repository.UserRepository;
 import com.echeo.security.JwtService;
+import com.echeo.util.ContactValidation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,7 +42,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final EmailService emailService;
 
-    @Value("${echeo.frontend.base-url}")
+    @Value("${echeo.frontend.base-url:https://echeo-one.vercel.app}")
     private String frontendBaseUrl;
 
     public AuthService(UserRepository userRepository,
@@ -60,21 +61,58 @@ public class AuthService {
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
-        userRepository.findByEmail(request.getEmail()).ifPresent(existing -> {
+        ContactValidation.validateEmailFormat(request.getEmail());
+        String phone = ContactValidation.normalizeAndValidatePhone(request.getPhone());
+
+        userRepository.findByEmail(request.getEmail().trim().toLowerCase()).ifPresent(existing -> {
             throw new InvalidArgumentException("Un compte existe déjà avec cet email.");
         });
 
         User user = new User();
-        user.setFullName(request.getFullName());
-        user.setEmail(request.getEmail());
-        user.setPhone(request.getPhone());
+        user.setFullName(request.getFullName().trim());
+        user.setEmail(request.getEmail().trim().toLowerCase());
+        user.setPhone(phone);
         user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
         user.setRole(Role.USER);
+        user.setEmailVerified(false);
+        user.setEmailVerificationToken(UUID.randomUUID());
+        user.setEmailVerificationSentAt(OffsetDateTime.now());
 
         User saved = userRepository.save(user);
-        String token = jwtService.generateToken(saved);
+        sendVerificationEmail(saved);
 
+        String token = jwtService.generateToken(saved);
         return new AuthResponse(token, saved.getId(), saved.getFullName(), saved.getEmail(), saved.getRole().name());
+    }
+
+    @Transactional
+    public void verifyEmail(String rawToken) {
+        UUID tokenUuid;
+        try {
+            tokenUuid = UUID.fromString(rawToken);
+        } catch (IllegalArgumentException ex) {
+            throw new InvalidArgumentException("Lien de confirmation invalide.");
+        }
+        User user = userRepository.findByEmailVerificationToken(tokenUuid)
+                .orElseThrow(() -> new InvalidArgumentException("Lien de confirmation invalide ou déjà utilisé."));
+        user.setEmailVerified(true);
+        user.setEmailVerificationToken(null);
+        userRepository.save(user);
+    }
+
+    private void sendVerificationEmail(User user) {
+        String base = frontendBaseUrl == null ? "https://echeo-one.vercel.app"
+                : frontendBaseUrl.replaceAll("/+$", "");
+        String link = base + "/verify-email?token=" + user.getEmailVerificationToken();
+        String subject = "ÉCHÉO — Confirme ton email";
+        String body = "Bonjour " + user.getFullName() + ",\n\n"
+                + "Confirme ton adresse email en ouvrant ce lien :\n" + link + "\n\n"
+                + "Si tu n'as pas créé de compte ÉCHÉO, ignore cet email.";
+        try {
+            emailService.send(user.getEmail(), subject, body);
+        } catch (Exception ex) {
+            log.warn("Échec envoi email de confirmation à {} : {}", user.getEmail(), ex.getMessage());
+        }
     }
 
     public AuthResponse login(LoginRequest request) {

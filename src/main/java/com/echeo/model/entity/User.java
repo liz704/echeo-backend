@@ -10,8 +10,12 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.util.UUID;
 
 /**
  * Utilisateur de la plateforme ÉCHÉO.
@@ -46,6 +50,38 @@ public class User {
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
+
+    /** Langue des e-mails : "fr" (défaut) ou "en". */
+    @Column(name = "preferred_locale", nullable = false, length = 5)
+    private String preferredLocale = "fr";
+
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified = false;
+
+    @Column(name = "email_verification_token")
+    private UUID emailVerificationToken;
+
+    @Column(name = "email_verification_sent_at")
+    private OffsetDateTime emailVerificationSentAt;
+
+    @Column(name = "week_plan_enabled", nullable = false)
+    private boolean weekPlanEnabled = false;
+
+    /** 1 = Monday … 7 = Sunday (ISO). */
+    @Column(name = "week_plan_day", nullable = false)
+    @JdbcTypeCode(SqlTypes.SMALLINT)
+    private int weekPlanDay = 1;
+
+    @Column(name = "week_plan_send_time", nullable = false)
+    private LocalTime weekPlanSendTime = LocalTime.of(8, 0);
+
+    @Column(name = "week_plan_token")
+    private UUID weekPlanToken;
+
+    @Column(name = "week_plan_last_sent_at")
+    private OffsetDateTime weekPlanLastSentAt;
+
+
 
     public User() {
     }
@@ -127,4 +163,30 @@ public class User {
     public void setCreatedAt(OffsetDateTime createdAt) {
         this.createdAt = createdAt;
     }
+
+    public String getPreferredLocale() {
+        return preferredLocale == null || preferredLocale.isBlank() ? "fr" : preferredLocale;
+    }
+
+    public void setPreferredLocale(String preferredLocale) {
+        this.preferredLocale = preferredLocale;
+    }
+
+    public boolean isWeekPlanEnabled() { return weekPlanEnabled; }
+    public void setWeekPlanEnabled(boolean weekPlanEnabled) { this.weekPlanEnabled = weekPlanEnabled; }
+    public int getWeekPlanDay() { return weekPlanDay; }
+    public void setWeekPlanDay(int weekPlanDay) { this.weekPlanDay = weekPlanDay; }
+    public LocalTime getWeekPlanSendTime() { return weekPlanSendTime; }
+    public void setWeekPlanSendTime(LocalTime weekPlanSendTime) { this.weekPlanSendTime = weekPlanSendTime; }
+    public UUID getWeekPlanToken() { return weekPlanToken; }
+    public void setWeekPlanToken(UUID weekPlanToken) { this.weekPlanToken = weekPlanToken; }
+    public OffsetDateTime getWeekPlanLastSentAt() { return weekPlanLastSentAt; }
+    public void setWeekPlanLastSentAt(OffsetDateTime weekPlanLastSentAt) { this.weekPlanLastSentAt = weekPlanLastSentAt; }
+
+    public boolean isEmailVerified() { return emailVerified; }
+    public void setEmailVerified(boolean emailVerified) { this.emailVerified = emailVerified; }
+    public UUID getEmailVerificationToken() { return emailVerificationToken; }
+    public void setEmailVerificationToken(UUID emailVerificationToken) { this.emailVerificationToken = emailVerificationToken; }
+    public OffsetDateTime getEmailVerificationSentAt() { return emailVerificationSentAt; }
+    public void setEmailVerificationSentAt(OffsetDateTime emailVerificationSentAt) { this.emailVerificationSentAt = emailVerificationSentAt; }
 }

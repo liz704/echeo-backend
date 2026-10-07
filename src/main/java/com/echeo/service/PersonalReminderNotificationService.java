@@ -47,16 +47,19 @@ public class PersonalReminderNotificationService {
     private final PersonalReminderRepository reminderRepository;
     private final NotificationLogRepository notificationLogRepository;
     private final EmailService emailService;
+    private final ReminderService reminderService;
 
     @Value("${echeo.frontend.base-url:https://echeo-one.vercel.app}")
     private String frontendBaseUrl;
 
     public PersonalReminderNotificationService(PersonalReminderRepository reminderRepository,
                                                 NotificationLogRepository notificationLogRepository,
-                                                EmailService emailService) {
+                                                EmailService emailService,
+                                                ReminderService reminderService) {
         this.reminderRepository = reminderRepository;
         this.notificationLogRepository = notificationLogRepository;
         this.emailService = emailService;
+        this.reminderService = reminderService;
     }
 
     /**
@@ -67,22 +70,50 @@ public class PersonalReminderNotificationService {
     @Scheduled(cron = "0 * * * * *")
     @Transactional
     public void sendDueReminders() {
-        LocalDate today = LocalDate.now();
-        LocalDateTime now = LocalDateTime.now();
+        java.time.ZoneId zone = java.time.ZoneId.of("Africa/Douala");
+        LocalDate today = LocalDate.now(zone);
+        LocalDateTime now = LocalDateTime.now(zone);
 
         List<PersonalReminder> candidates =
                 reminderRepository.findByCompletedFalseAndNotificationSentAtIsNullAndDueDateLessThanEqual(today);
 
+        log.info("Rappels perso: {} candidat(s) (due_date<= {}, now={})",
+                candidates.size(), today, now);
+
+        int sent = 0;
+        int skippedTime = 0;
         for (PersonalReminder reminder : candidates) {
             LocalTime effectiveTime = reminder.getDueTime() != null ? reminder.getDueTime() : DEFAULT_TIME;
             LocalDateTime triggerAt = reminder.getDueDate().atTime(effectiveTime);
 
-            // Pas encore l'heure réglée (rappel du jour même, mais plus tard) : on attend.
-            if (now.isBefore(triggerAt)) {
+            // Date déjà dépassée (hier ou avant) → envoi immédiat, sans attendre l'heure.
+            // Date = aujourd'hui → on attend l'heure réglée.
+            boolean dateFullyPast = reminder.getDueDate().isBefore(today);
+            if (!dateFullyPast && now.isBefore(triggerAt)) {
+                skippedTime++;
+                log.debug("Rappel {} « {} » reporté: déclenchement à {}",
+                        reminder.getId(), reminder.getTitle(), triggerAt);
                 continue;
             }
 
+            log.info("Envoi rappel perso id={} « {} » due={} {} (notification_sent_at={})",
+                    reminder.getId(), reminder.getTitle(),
+                    reminder.getDueDate(), effectiveTime, reminder.getNotificationSentAt());
             sendReminderEmail(reminder);
+            sent++;
+        }
+        if (candidates.size() > 0) {
+            log.info("Rappels perso: envoyés={}, reportés (heure pas atteinte)={}", sent, skippedTime);
+        }
+
+        // Récurrence sans argent : avancer auto si l'échéance est passée sans "Fait"
+        try {
+            int rolled = reminderService.rollForwardOverdueRecurring(today, now);
+            if (rolled > 0) {
+                log.info("Rappels récurrents avancés automatiquement : {}", rolled);
+            }
+        } catch (Exception ex) {
+            log.warn("Échec roll-forward rappels récurrents : {}", ex.getMessage());
         }
     }
 
@@ -110,7 +141,11 @@ public class PersonalReminderNotificationService {
         notificationLogRepository.save(notificationLog);
 
         try {
-            String messageId = emailService.send(user.getEmail(), "ÉCHÉO — Rappel : " + reminder.getTitle(), message);
+            String locale = user.getPreferredLocale() != null ? user.getPreferredLocale() : "fr";
+            String subject = "en".equalsIgnoreCase(locale)
+                    ? ("ÉCHÉO — Reminder: " + reminder.getTitle())
+                    : ("ÉCHÉO — Rappel : " + reminder.getTitle());
+            String messageId = emailService.send(user.getEmail(), subject, message);
             notificationLog.setProviderMessageId(messageId);
             notificationLog.setStatus(NotificationStatus.SENT);
         } catch (Exception ex) {
@@ -130,9 +165,21 @@ public class PersonalReminderNotificationService {
     }
 
     private String buildReminderMessage(PersonalReminder reminder) {
+        User user = reminder.getUser();
+        String locale = user != null && user.getPreferredLocale() != null
+                ? user.getPreferredLocale() : "fr";
+        boolean en = "en".equalsIgnoreCase(locale);
+        String base = frontendBaseUrl == null ? "https://echeo-one.vercel.app"
+                : frontendBaseUrl.replaceAll("/+$", "");
+
         StringBuilder message = new StringBuilder();
-        message.append("Bonjour ").append(reminder.getUser().getFullName()).append(", ");
-        message.append("c'est aujourd'hui : \"").append(reminder.getTitle()).append("\"");
+        if (en) {
+            message.append("Hello ").append(user.getFullName()).append(", ");
+            message.append("today: \"").append(reminder.getTitle()).append("\"");
+        } else {
+            message.append("Bonjour ").append(user.getFullName()).append(", ");
+            message.append("c'est aujourd'hui : \"").append(reminder.getTitle()).append("\"");
+        }
         if (reminder.getDueTime() != null) {
             message.append(" (").append(reminder.getDueTime().format(TIME_FORMAT)).append(")");
         }
@@ -141,8 +188,12 @@ public class PersonalReminderNotificationService {
             message.append(" ").append(reminder.getDescription());
         }
         if (reminder.getPublicCompletionToken() != null) {
-            String completionLink = frontendBaseUrl + "/reminders/complete/" + reminder.getPublicCompletionToken();
-            message.append(" Clique ici pour marquer ce rappel comme fait : ").append(completionLink);
+            String completionLink = base + "/reminders/complete/" + reminder.getPublicCompletionToken();
+            if (en) {
+                message.append(" Click here to mark this reminder as done: ").append(completionLink);
+            } else {
+                message.append(" Clique ici pour marquer ce rappel comme fait : ").append(completionLink);
+            }
         }
         return message.toString();
     }

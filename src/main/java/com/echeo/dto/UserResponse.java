@@ -10,6 +10,10 @@ public class UserResponse {
     private String fullName;
     private String email;
     private String phone;
+    private String preferredLocale;
+    private boolean weekPlanEnabled;
+    private int weekPlanDay;
+    private String weekPlanSendTime;
     private String role;
     private OffsetDateTime createdAt;
 
@@ -21,6 +25,12 @@ public class UserResponse {
         response.phone = user.getPhone();
         response.role = user.getRole().name();
         response.createdAt = user.getCreatedAt();
+        response.preferredLocale = user.getPreferredLocale();
+        response.weekPlanEnabled = user.isWeekPlanEnabled();
+        response.weekPlanDay = user.getWeekPlanDay();
+        if (user.getWeekPlanSendTime() != null) {
+            response.weekPlanSendTime = user.getWeekPlanSendTime().toString();
+        }
         return response;
     }
 
@@ -47,4 +57,14 @@ public class UserResponse {
     public OffsetDateTime getCreatedAt() {
         return createdAt;
     }
+
+    public String getPreferredLocale() { return preferredLocale; }
+    public void setPreferredLocale(String preferredLocale) { this.preferredLocale = preferredLocale; }
+
+    public boolean isWeekPlanEnabled() { return weekPlanEnabled; }
+    public void setWeekPlanEnabled(boolean weekPlanEnabled) { this.weekPlanEnabled = weekPlanEnabled; }
+    public int getWeekPlanDay() { return weekPlanDay; }
+    public void setWeekPlanDay(int weekPlanDay) { this.weekPlanDay = weekPlanDay; }
+    public String getWeekPlanSendTime() { return weekPlanSendTime; }
+    public void setWeekPlanSendTime(String weekPlanSendTime) { this.weekPlanSendTime = weekPlanSendTime; }
 }

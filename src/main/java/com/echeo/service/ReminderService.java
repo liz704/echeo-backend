@@ -115,6 +115,7 @@ public class ReminderService {
             nextReminder.setCompleted(false);
             nextReminder.setNextOccurrence(null);
             nextReminder.setPublicCompletionToken(java.util.UUID.randomUUID());
+            nextReminder.setNotificationSentAt(null);
 
             reminderRepository.save(nextReminder);
             return current;
@@ -197,6 +198,73 @@ public class ReminderService {
     /**
      * Calcule la date de la prochaine occurrence en fonction du type de récurrence.
      */
+
+    /**
+     * Pour les rappels personnels récurrents dont la date/heure est dépassée
+     * et qui ne sont pas encore "faits" : clôture l'occurrence courante et
+     * génère la suivante (même logique que markAsCompleted). Ainsi un rappel
+     * sans argent n'attend pas un clic "Fait" pour avancer.
+     */
+    @Transactional
+    public int rollForwardOverdueRecurring(java.time.LocalDate today, java.time.LocalDateTime now) {
+        java.util.List<PersonalReminder> active = reminderRepository.findAll().stream()
+                .filter(r -> !r.isCompleted())
+                .filter(r -> r.getRepetitionType() != null && r.getRepetitionType() != RepetitionType.NONE)
+                .filter(r -> r.getDueDate() != null && !r.getDueDate().isAfter(today))
+                .toList();
+
+        int rolled = 0;
+        for (PersonalReminder start : active) {
+            // Rattrapage multi-occurrences : si 5 jours de DAILY manqués, on
+            // enchaîne jusqu'à une échéance future (ou aujourd'hui pas encore due).
+            Long currentId = start.getId();
+            int safety = 0;
+            while (currentId != null && safety++ < 400) {
+                PersonalReminder current = reminderRepository.findById(currentId).orElse(null);
+                if (current == null || current.isCompleted()) {
+                    break;
+                }
+                if (current.getRepetitionType() == null || current.getRepetitionType() == RepetitionType.NONE) {
+                    break;
+                }
+                if (current.getDueDate() == null) {
+                    break;
+                }
+                java.time.LocalTime time = current.getDueTime() != null
+                        ? current.getDueTime() : java.time.LocalTime.of(8, 0);
+                java.time.LocalDateTime trigger = current.getDueDate().atTime(time);
+                // Pas encore l'heure (aujourd'hui plus tard) → stop
+                if (now.isBefore(trigger)) {
+                    break;
+                }
+
+                LocalDate nextDate = computeNextOccurrence(current.getDueDate(), current.getRepetitionType());
+                markAsCompleted(current.getId());
+                rolled++;
+
+                if (nextDate == null) {
+                    break;
+                }
+                // Nouvelle occurrence créée par markAsCompleted : on la retrouve
+                final LocalDate nd = nextDate;
+                final Long userId = current.getUser().getId();
+                final String title = current.getTitle();
+                PersonalReminder next = reminderRepository.findAll().stream()
+                        .filter(r -> !r.isCompleted())
+                        .filter(r -> r.getUser() != null && userId.equals(r.getUser().getId()))
+                        .filter(r -> title.equals(r.getTitle()))
+                        .filter(r -> nd.equals(r.getDueDate()))
+                        .findFirst()
+                        .orElse(null);
+                if (next == null) {
+                    break;
+                }
+                currentId = next.getId();
+            }
+        }
+        return rolled;
+    }
+
     private LocalDate computeNextOccurrence(LocalDate currentDueDate, RepetitionType repetitionType) {
         if (currentDueDate == null) {
             throw new InvalidArgumentException("Impossible de calculer la prochaine occurrence : due_date est nulle.");
