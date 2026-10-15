@@ -49,7 +49,8 @@ public class FarotyPayClient {
     }
 
     public boolean isConfigured() {
-        return walletId != null && !walletId.isBlank();
+        return walletId != null && !walletId.isBlank()
+                && apiKey != null && !apiKey.isBlank();
     }
 
     private HttpRequest.Builder base(String path) {
@@ -68,8 +69,13 @@ public class FarotyPayClient {
     }
 
     public Session createSession(BigDecimal amount, String successUrl, String cancelUrl, String ip) {
-        if (!isConfigured()) {
-            throw new IllegalStateException("Paiement en ligne non configuré (FAROTY_WALLET_ID manquant).");
+        if (walletId == null || walletId.isBlank()) {
+            throw new IllegalStateException(
+                    "Paiement en ligne non configuré : FAROTY_WALLET_ID manquant sur le serveur.");
+        }
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException(
+                    "Paiement en ligne non configuré : FAROTY_API_KEY (clé API) manquante sur le serveur.");
         }
         try {
             Map<String, Object> body = new LinkedHashMap<>();
