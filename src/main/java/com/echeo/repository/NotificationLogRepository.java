@@ -14,4 +14,8 @@ public interface NotificationLogRepository extends JpaRepository<NotificationLog
     List<NotificationLog> findByRecipientContactInOrderBySentAtDesc(List<String> recipientContacts);
 
     Optional<NotificationLog> findByProviderMessageId(String providerMessageId);
+
+    /** E-mails échoués à renvoyer (seuls ceux qui ont un objet enregistré sont rejouables). */
+    List<NotificationLog> findTop50ByStatusAndSubjectIsNotNullAndRetryCountLessThanOrderByIdAsc(
+            com.echeo.model.enums.NotificationStatus status, int maxRetries);
 }

@@ -50,7 +50,41 @@ public class NotificationLog {
     @Column(name = "provider_message_id")
     private String providerMessageId;
 
+    // Objet de l'e-mail (conservé pour pouvoir renvoyer à l'identique).
+    @Column(name = "subject", length = 255)
+    private String subject;
+
+    @Column(name = "retry_count", nullable = false)
+    private int retryCount = 0;
+
+    @Column(name = "last_attempt_at")
+    private OffsetDateTime lastAttemptAt;
+
     public NotificationLog() {
+    }
+
+    public String getSubject() {
+        return subject;
+    }
+
+    public void setSubject(String subject) {
+        this.subject = subject;
+    }
+
+    public int getRetryCount() {
+        return retryCount;
+    }
+
+    public void setRetryCount(int retryCount) {
+        this.retryCount = retryCount;
+    }
+
+    public OffsetDateTime getLastAttemptAt() {
+        return lastAttemptAt;
+    }
+
+    public void setLastAttemptAt(OffsetDateTime lastAttemptAt) {
+        this.lastAttemptAt = lastAttemptAt;
     }
 
     public NotificationLog(Long id, String recipientContact, NotificationType type, String messageContent,

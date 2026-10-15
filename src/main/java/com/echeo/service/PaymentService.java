@@ -5,15 +5,11 @@ import com.echeo.exception.InvalidArgumentException;
 import com.echeo.model.entity.EventMemberStatus;
 import com.echeo.model.entity.GroupEvent;
 import com.echeo.model.entity.GroupMember;
-import com.echeo.model.entity.NotificationLog;
 import com.echeo.model.entity.PaymentHistory;
 import com.echeo.model.entity.PaymentToken;
-import com.echeo.model.enums.NotificationStatus;
-import com.echeo.model.enums.NotificationType;
 import com.echeo.model.enums.PaymentMethod;
 import com.echeo.model.enums.PaymentStatus;
 import com.echeo.repository.EventMemberStatusRepository;
-import com.echeo.repository.NotificationLogRepository;
 import com.echeo.repository.PaymentHistoryRepository;
 import com.echeo.repository.PaymentTokenRepository;
 import org.slf4j.Logger;
@@ -45,19 +41,16 @@ public class PaymentService {
     private final EventMemberStatusRepository eventMemberStatusRepository;
     private final PaymentHistoryRepository paymentHistoryRepository;
     private final PaymentTokenRepository paymentTokenRepository;
-    private final NotificationLogRepository notificationLogRepository;
-    private final EmailService emailService;
+    private final NotificationDispatchService dispatchService;
 
     public PaymentService(EventMemberStatusRepository eventMemberStatusRepository,
                            PaymentHistoryRepository paymentHistoryRepository,
                            PaymentTokenRepository paymentTokenRepository,
-                           NotificationLogRepository notificationLogRepository,
-                           EmailService emailService) {
+                           NotificationDispatchService dispatchService) {
         this.eventMemberStatusRepository = eventMemberStatusRepository;
         this.paymentHistoryRepository = paymentHistoryRepository;
         this.paymentTokenRepository = paymentTokenRepository;
-        this.notificationLogRepository = notificationLogRepository;
-        this.emailService = emailService;
+        this.dispatchService = dispatchService;
     }
 
     /**
@@ -95,25 +88,10 @@ public class PaymentService {
 
         BigDecimal newPaidAmount = previousPaid.add(amount);
 
-        // Tolérance "frais de retrait" : un membre qui envoie un peu plus
-        // que le montant requis pour couvrir les frais de retrait du
-        // propriétaire (Mobile Money / Orange Money) ne doit pas être
-        // compté en SURPLUS pour cette marge-là.
         GroupEvent event = status.getEvent();
-        BigDecimal withdrawalFeeTolerance = (event != null && event.getWithdrawalFeeAmount() != null)
-                ? event.getWithdrawalFeeAmount() : BigDecimal.ZERO;
-        BigDecimal surplusThreshold = requiredAmount.add(withdrawalFeeTolerance);
-
-        BigDecimal surplusAmount = BigDecimal.ZERO;
-        PaymentStatus newStatus;
-        if (newPaidAmount.compareTo(requiredAmount) < 0) {
-            newStatus = PaymentStatus.PARTIALLY_PAID;
-        } else if (newPaidAmount.compareTo(surplusThreshold) <= 0) {
-            newStatus = PaymentStatus.PAID;
-        } else {
-            newStatus = PaymentStatus.SURPLUS;
-            surplusAmount = newPaidAmount.subtract(surplusThreshold);
-        }
+        BigDecimal fee = event != null ? event.getWithdrawalFeeAmount() : null;
+        PaymentStatus newStatus = com.echeo.util.PaymentRules.statusFor(newPaidAmount, requiredAmount, fee);
+        BigDecimal surplusAmount = com.echeo.util.PaymentRules.surplus(newPaidAmount, requiredAmount, fee);
 
         status.setPaidAmount(newPaidAmount);
         status.setStatus(newStatus);
@@ -148,71 +126,59 @@ public class PaymentService {
     private void sendReceipt(EventMemberStatus status, BigDecimal amountPaid, PaymentMethod paymentMethod,
                               String transactionRef, OffsetDateTime paidAt) {
         GroupMember member = status.getGroupMember();
-        String receiptText = buildReceiptText(status, amountPaid, paymentMethod, transactionRef, paidAt);
+        var group = status.getEvent().getGroup();
+        String locale = NotificationDispatchService.resolveLocale(member, group);
+        boolean en = locale.equals("en");
 
         String memberContact = member.getContactEmail() != null ? member.getContactEmail() : member.getContactPhone();
-        logAndSendEmail(memberContact, "ÉCHÉO — Reçu de paiement", receiptText);
+        if (memberContact != null && !memberContact.isBlank()) {
+            dispatchService.sendEmail(memberContact,
+                    en ? "ÉCHÉO — Payment receipt" : "ÉCHÉO — Reçu de paiement",
+                    buildReceiptText(status, amountPaid, paymentMethod, transactionRef, paidAt, en));
+        }
 
-        var group = status.getEvent().getGroup();
-        if (group.isNotifyOwnerOnReminders()) {
-            String ownerCopy = "Copie pour information (propriétaire du groupe) :\n\n" + receiptText;
-            logAndSendEmail(group.getOwner().getEmail(), "ÉCHÉO — Paiement reçu dans votre groupe", ownerCopy);
+        if (group.isNotifyOwnerOnReminders() && group.getOwner() != null) {
+            boolean ownerEn = NotificationDispatchService.ownerLocale(group).equals("en");
+            String receipt = buildReceiptText(status, amountPaid, paymentMethod, transactionRef, paidAt, ownerEn);
+            String ownerCopy = (ownerEn ? "Copy for information (group owner):\n\n"
+                    : "Copie pour information (propriétaire du groupe) :\n\n") + receipt;
+            dispatchService.sendEmail(group.getOwner().getEmail(),
+                    ownerEn ? "ÉCHÉO — Payment received in your group" : "ÉCHÉO — Paiement reçu dans votre groupe",
+                    ownerCopy);
         }
     }
 
     private String buildReceiptText(EventMemberStatus status, BigDecimal amountPaid, PaymentMethod paymentMethod,
-                                     String transactionRef, OffsetDateTime paidAt) {
+                                     String transactionRef, OffsetDateTime paidAt, boolean en) {
         String separator = "----------------------------------------";
-        StringBuilder receipt = new StringBuilder();
-        receipt.append(separator).append('\n');
-        receipt.append("           REÇU DE PAIEMENT — ÉCHÉO\n");
-        receipt.append(separator).append('\n');
-        receipt.append("Événement       : ").append(status.getEvent().getTitle()).append('\n');
-        receipt.append("Membre          : ").append(status.getGroupMember().getContactFullName()).append('\n');
-        receipt.append("Date            : ").append(paidAt.format(RECEIPT_DATE_FORMAT)).append('\n');
-        receipt.append("Montant versé   : ").append(formatAmount(amountPaid)).append(" FCFA\n");
-        receipt.append("Moyen           : ").append(paymentMethod).append('\n');
+        DateTimeFormatter fmt = en
+                ? DateTimeFormatter.ofPattern("dd/MM/yyyy 'at' HH:mm", Locale.ENGLISH)
+                : RECEIPT_DATE_FORMAT;
+        java.time.ZonedDateTime when = paidAt.atZoneSameInstant(java.time.ZoneId.of("Africa/Douala"));
+        StringBuilder r = new StringBuilder();
+        r.append(separator).append('\n');
+        r.append(en ? "           PAYMENT RECEIPT — ÉCHÉO\n" : "           REÇU DE PAIEMENT — ÉCHÉO\n");
+        r.append(separator).append('\n');
+        r.append(en ? "Event           : " : "Événement       : ").append(status.getEvent().getTitle()).append('\n');
+        r.append(en ? "Member          : " : "Membre          : ").append(status.getGroupMember().getContactFullName()).append('\n');
+        r.append("Date            : ").append(when.format(fmt)).append('\n');
+        r.append(en ? "Amount paid     : " : "Montant versé   : ").append(formatAmount(amountPaid)).append(" FCFA\n");
+        r.append(en ? "Method          : " : "Moyen           : ").append(paymentMethod).append('\n');
         if (transactionRef != null && !transactionRef.isBlank()) {
-            receipt.append("Référence       : ").append(transactionRef).append('\n');
+            r.append(en ? "Reference       : " : "Référence       : ").append(transactionRef).append('\n');
         }
-        receipt.append(separator).append('\n');
-        receipt.append("Total requis    : ").append(formatAmount(status.getRequiredAmount())).append(" FCFA\n");
-        receipt.append("Total payé      : ").append(formatAmount(status.getPaidAmount())).append(" FCFA\n");
-        receipt.append("Statut          : ").append(status.getStatus()).append('\n');
-        receipt.append(separator).append('\n');
-        receipt.append("Merci — ceci est un reçu généré automatiquement par ÉCHÉO.");
-        return receipt.toString();
+        r.append(separator).append('\n');
+        r.append(en ? "Total requested : " : "Total requis    : ").append(formatAmount(status.getRequiredAmount())).append(" FCFA\n");
+        r.append(en ? "Total paid      : " : "Total payé      : ").append(formatAmount(status.getPaidAmount())).append(" FCFA\n");
+        r.append(en ? "Status          : " : "Statut          : ").append(status.getStatus()).append('\n');
+        r.append(separator).append('\n');
+        r.append(en ? "Thank you — this receipt was generated automatically by ÉCHÉO."
+                : "Merci — ceci est un reçu généré automatiquement par ÉCHÉO.");
+        return r.toString();
     }
 
     private String formatAmount(BigDecimal amount) {
         return amount.stripTrailingZeros().toPlainString();
-    }
-
-    private void logAndSendEmail(String recipientContact, String subject, String body) {
-        if (recipientContact == null || recipientContact.isBlank()) {
-            return;
-        }
-
-        NotificationLog notificationLog = new NotificationLog();
-        notificationLog.setRecipientContact(recipientContact);
-        notificationLog.setType(NotificationType.EMAIL);
-        notificationLog.setMessageContent(body);
-        notificationLog.setStatus(NotificationStatus.PENDING);
-        notificationLogRepository.save(notificationLog);
-
-        boolean sent;
-        try {
-            String messageId = emailService.send(recipientContact, subject, body);
-            notificationLog.setProviderMessageId(messageId);
-            sent = true;
-        } catch (Exception ex) {
-            log.warn("Échec de l'envoi du reçu à {} : {}", recipientContact, ex.getMessage());
-            sent = false;
-        }
-
-        notificationLog.setSentAt(OffsetDateTime.now());
-        notificationLog.setStatus(sent ? NotificationStatus.SENT : NotificationStatus.FAILED);
-        notificationLogRepository.save(notificationLog);
     }
 
     /**

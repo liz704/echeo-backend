@@ -75,4 +75,6 @@ public interface EventMemberStatusRepository extends JpaRepository<EventMemberSt
     // Résolution du lien public "marquer comme vu" (événements sans argent) —
     // voir PublicAcknowledgmentController.
     java.util.Optional<EventMemberStatus> findByPublicAckToken(java.util.UUID publicAckToken);
+
+    java.util.Optional<EventMemberStatus> findFirstByEvent_IdAndGroupMember_Id(Long eventId, Long groupMemberId);
 }

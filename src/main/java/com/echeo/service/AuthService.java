@@ -9,7 +9,9 @@ import com.echeo.model.entity.PasswordResetToken;
 import com.echeo.model.entity.User;
 import com.echeo.model.enums.Role;
 import com.echeo.repository.PasswordResetTokenRepository;
+import com.echeo.repository.GroupMemberRepository;
 import com.echeo.repository.UserRepository;
+import com.echeo.model.entity.GroupMember;
 import com.echeo.security.JwtService;
 import com.echeo.util.ContactValidation;
 import org.slf4j.Logger;
@@ -41,6 +43,7 @@ public class AuthService {
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final EmailService emailService;
+    private final GroupMemberRepository groupMemberRepository;
 
     @Value("${echeo.frontend.base-url:https://echeo-one.vercel.app}")
     private String frontendBaseUrl;
@@ -50,13 +53,15 @@ public class AuthService {
                         PasswordEncoder passwordEncoder,
                         AuthenticationManager authenticationManager,
                         JwtService jwtService,
-                        EmailService emailService) {
+                        EmailService emailService,
+                        GroupMemberRepository groupMemberRepository) {
         this.userRepository = userRepository;
         this.passwordResetTokenRepository = passwordResetTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
         this.jwtService = jwtService;
         this.emailService = emailService;
+        this.groupMemberRepository = groupMemberRepository;
     }
 
     @Transactional
@@ -79,10 +84,43 @@ public class AuthService {
         user.setEmailVerificationSentAt(OffsetDateTime.now());
 
         User saved = userRepository.save(user);
+        // Rattache les appartenances "membre externe" déjà créées avec le même email
+        // → l'utilisateur voit ses cotisations dans /payments (Mes contributions).
+        linkExternalMembershipsToUser(saved);
         sendVerificationEmail(saved);
 
         String token = jwtService.generateToken(saved);
         return new AuthResponse(token, saved.getId(), saved.getFullName(), saved.getEmail(), saved.getRole().name());
+    }
+
+    /**
+     * Si un propriétaire a ajouté cette personne comme membre externe (email seul),
+     * on lie maintenant le GroupMember au User pour que "Mes contributions" fonctionne.
+     */
+    private void linkExternalMembershipsToUser(User user) {
+        if (user.getEmail() == null || user.getEmail().isBlank()) {
+            return;
+        }
+        java.util.List<GroupMember> externals =
+                groupMemberRepository.findByExternalEmailIgnoreCase(user.getEmail().trim());
+        for (GroupMember member : externals) {
+            if (member.getUser() != null) {
+                continue;
+            }
+            // Évite conflit unique (group_id, user_id) si déjà lié autrement
+            if (groupMemberRepository.existsByGroup_IdAndUser_Id(member.getGroup().getId(), user.getId())) {
+                continue;
+            }
+            // La contrainte chk_group_member_identity interdit d'avoir user_id ET
+            // external_* en même temps : on vide les champs externes en liant.
+            member.setUser(user);
+            member.setExternalFullName(null);
+            member.setExternalEmail(null);
+            member.setExternalPhone(null);
+            groupMemberRepository.saveAndFlush(member);
+            log.info("Membre externe {} rattaché au compte userId={} (groupe {})",
+                    member.getId(), user.getId(), member.getGroup().getId());
+        }
     }
 
     @Transactional

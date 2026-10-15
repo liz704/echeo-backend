@@ -16,6 +16,7 @@ public class PublicPaymentDetailsResponse {
     private BigDecimal requiredAmount;
     private BigDecimal paidAmount;
     private BigDecimal remainingAmount;
+    private BigDecimal withdrawalFeeAmount;
     private PaymentStatus status;
     private OffsetDateTime tokenExpiresAt;
 
@@ -23,13 +24,15 @@ public class PublicPaymentDetailsResponse {
     }
 
     public PublicPaymentDetailsResponse(String eventTitle, String memberFullName, BigDecimal requiredAmount,
-                                         BigDecimal paidAmount, BigDecimal remainingAmount, PaymentStatus status,
+                                         BigDecimal paidAmount, BigDecimal remainingAmount,
+                                         BigDecimal withdrawalFeeAmount, PaymentStatus status,
                                          OffsetDateTime tokenExpiresAt) {
         this.eventTitle = eventTitle;
         this.memberFullName = memberFullName;
         this.requiredAmount = requiredAmount;
         this.paidAmount = paidAmount;
         this.remainingAmount = remainingAmount;
+        this.withdrawalFeeAmount = withdrawalFeeAmount;
         this.status = status;
         this.tokenExpiresAt = tokenExpiresAt;
     }
@@ -52,6 +55,10 @@ public class PublicPaymentDetailsResponse {
 
     public BigDecimal getRemainingAmount() {
         return remainingAmount;
+    }
+
+    public BigDecimal getWithdrawalFeeAmount() {
+        return withdrawalFeeAmount;
     }
 
     public PaymentStatus getStatus() {

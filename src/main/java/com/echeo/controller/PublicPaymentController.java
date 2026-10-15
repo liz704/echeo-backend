@@ -29,9 +29,35 @@ import java.util.UUID;
 public class PublicPaymentController {
 
     private final PaymentService paymentService;
+    private final com.echeo.service.OnlinePaymentService onlinePaymentService;
 
-    public PublicPaymentController(PaymentService paymentService) {
+    public PublicPaymentController(PaymentService paymentService,
+                                   com.echeo.service.OnlinePaymentService onlinePaymentService) {
         this.paymentService = paymentService;
+        this.onlinePaymentService = onlinePaymentService;
+    }
+
+    /** Indique si le paiement en ligne est disponible (clés Faroty configurées). */
+    @GetMapping("/online-available")
+    public ResponseEntity<java.util.Map<String, Boolean>> onlineAvailable() {
+        return ResponseEntity.ok(java.util.Map.of("available", onlinePaymentService.isAvailable()));
+    }
+
+    /** Démarre un paiement en ligne : renvoie l'URL de la page de paiement Faroty. */
+    @PostMapping("/{token}/online")
+    public ResponseEntity<java.util.Map<String, String>> startOnline(
+            @PathVariable String token, jakarta.servlet.http.HttpServletRequest request) {
+        String fwd = request.getHeader("X-Forwarded-For");
+        String ip = fwd != null && !fwd.isBlank() ? fwd.split(",")[0].trim() : request.getRemoteAddr();
+        String url = onlinePaymentService.startSession(parseToken(token), ip);
+        return ResponseEntity.ok(java.util.Map.of("sessionUrl", url));
+    }
+
+    /** Au retour du membre : vérifie auprès de Faroty et enregistre le versement s'il est confirmé. */
+    @PostMapping("/{token}/online/refresh")
+    public ResponseEntity<Void> refreshOnline(@PathVariable String token) {
+        onlinePaymentService.refreshForToken(parseToken(token));
+        return ResponseEntity.noContent().build();
     }
 
     /**
@@ -45,17 +71,16 @@ public class PublicPaymentController {
 
         BigDecimal required = status.getRequiredAmount();
         BigDecimal paid = status.getPaidAmount();
-        BigDecimal remaining = required.subtract(paid);
-        if (remaining.compareTo(BigDecimal.ZERO) < 0) {
-            remaining = BigDecimal.ZERO;
-        }
-
+        java.math.BigDecimal fee = status.getEvent().getWithdrawalFeeAmount();
+        // Reste à payer FRAIS DE RETRAIT INCLUS (ce que le membre doit réellement envoyer).
+        BigDecimal remaining = com.echeo.util.PaymentRules.remainingToPay(paid, required, fee);
         PublicPaymentDetailsResponse response = new PublicPaymentDetailsResponse(
                 status.getEvent().getTitle(),
                 status.getGroupMember().getContactFullName(),
                 required,
                 paid,
                 remaining,
+                fee,
                 status.getStatus(),
                 paymentToken.getExpiresAt()
         );

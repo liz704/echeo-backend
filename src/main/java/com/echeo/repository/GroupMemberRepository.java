@@ -22,4 +22,10 @@ public interface GroupMemberRepository extends JpaRepository<GroupMember, Long> 
     // Un membre externe est identifié par son email au sein d'un groupe donné
     // (pas d'identifiant utilisateur puisqu'il n'a pas de compte).
     boolean existsByGroup_IdAndExternalEmail(Long groupId, String externalEmail);
+
+    /**
+     * Membres externes (sans compte) dont l'email correspond — pour rattacher
+     * le compte après inscription / à l'ajout si l'email existe déjà en users.
+     */
+    List<GroupMember> findByExternalEmailIgnoreCase(String externalEmail);
 }

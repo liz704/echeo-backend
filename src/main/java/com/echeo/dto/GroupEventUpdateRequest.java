@@ -92,4 +92,15 @@ public class GroupEventUpdateRequest {
     public void setRepetitionType(RepetitionType repetitionType) {
         this.repetitionType = repetitionType;
     }
+
+    // Jours de relance avant l'échéance, ex. "3,1,0" (facultatif).
+    private String reminderDaysBefore;
+
+    public String getReminderDaysBefore() {
+        return reminderDaysBefore;
+    }
+
+    public void setReminderDaysBefore(String reminderDaysBefore) {
+        this.reminderDaysBefore = reminderDaysBefore;
+    }
 }

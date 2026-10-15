@@ -45,7 +45,7 @@ public class PersonalReminderNotificationService {
     private static final LocalTime DEFAULT_TIME = LocalTime.of(8, 0);
 
     private final PersonalReminderRepository reminderRepository;
-    private final NotificationLogRepository notificationLogRepository;
+    private final NotificationDispatchService dispatchService;
     private final EmailService emailService;
     private final ReminderService reminderService;
 
@@ -53,11 +53,11 @@ public class PersonalReminderNotificationService {
     private String frontendBaseUrl;
 
     public PersonalReminderNotificationService(PersonalReminderRepository reminderRepository,
-                                                NotificationLogRepository notificationLogRepository,
+                                                NotificationDispatchService dispatchService,
                                                 EmailService emailService,
                                                 ReminderService reminderService) {
         this.reminderRepository = reminderRepository;
-        this.notificationLogRepository = notificationLogRepository;
+        this.dispatchService = dispatchService;
         this.emailService = emailService;
         this.reminderService = reminderService;
     }
@@ -133,32 +133,13 @@ public class PersonalReminderNotificationService {
 
         String message = buildReminderMessage(reminder);
 
-        NotificationLog notificationLog = new NotificationLog();
-        notificationLog.setRecipientContact(user.getEmail());
-        notificationLog.setType(NotificationType.EMAIL);
-        notificationLog.setMessageContent(message);
-        notificationLog.setStatus(NotificationStatus.PENDING);
-        notificationLogRepository.save(notificationLog);
-
-        try {
-            String locale = user.getPreferredLocale() != null ? user.getPreferredLocale() : "fr";
-            String subject = "en".equalsIgnoreCase(locale)
-                    ? ("ÉCHÉO — Reminder: " + reminder.getTitle())
-                    : ("ÉCHÉO — Rappel : " + reminder.getTitle());
-            String messageId = emailService.send(user.getEmail(), subject, message);
-            notificationLog.setProviderMessageId(messageId);
-            notificationLog.setStatus(NotificationStatus.SENT);
-        } catch (Exception ex) {
-            log.error("Échec de l'envoi du rappel personnel {} à {} : {}",
-                    reminder.getId(), user.getEmail(), ex.getMessage(), ex);
-            notificationLog.setStatus(NotificationStatus.FAILED);
-            // On ne marque PAS notificationSentAt si l'envoi échoue : le job
-            // retentera à la prochaine minute (nouveau rattrapage).
-            notificationLogRepository.save(notificationLog);
-            return;
-        }
-        notificationLog.setSentAt(OffsetDateTime.now());
-        notificationLogRepository.save(notificationLog);
+        String locale = user.getPreferredLocale() != null ? user.getPreferredLocale() : "fr";
+        String subject = "en".equalsIgnoreCase(locale)
+                ? ("ÉCHÉO — Reminder: " + reminder.getTitle())
+                : ("ÉCHÉO — Rappel : " + reminder.getTitle());
+        // L'envoi est journalisé ; s'il échoue il sera renvoyé automatiquement
+        // (NotificationDispatchService), donc le rappel est considéré comme traité.
+        dispatchService.sendEmail(user.getEmail(), subject, message);
 
         reminder.setNotificationSentAt(OffsetDateTime.now());
         reminderRepository.save(reminder);

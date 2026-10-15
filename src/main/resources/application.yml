@@ -35,13 +35,20 @@ echeo:
     secret: ${ECHEO_JWT_SECRET:change-me-use-a-long-random-secret-in-production}
     expiration-ms: ${ECHEO_JWT_EXPIRATION_MS:86400000}
   brevo:
-    api-key: ${BREVO_API_KEY:${ECHEO_BREVO_API_KEY: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}}
+    api-key: ${BREVO_API_KEY:${ECHEO_BREVO_API_KEY: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}}
   mail:
     from: ${ECHEO_MAIL_FROM:${MAIL_FROM:chuembouketchemenlizperle@gmail.com}}
     from-name: ${ECHEO_MAIL_FROM_NAME:ÉCHÉO}
   timezone: ${ECHEO_TIMEZONE:Africa/Douala}
   frontend:
     base-url: ${ECHEO_FRONTEND_BASE_URL:https://echeo-one.vercel.app}
+  # Paiement en ligne Faroty Pay (aucun secret dans le code : variables d'environnement Render)
+  faroty:
+    base-url: ${FAROTY_PAY_BASE_URL:https://api-pay-prod.faroty.me}
+    wallet-id: ${FAROTY_WALLET_ID:0a208549-f8d3-4ca3-a1b6-5c692723e0e6}
+    api-key: ${FAROTY_API_KEY:fk_live_I5ba_X8jMUh9y6wk_PhRQ1htfMbnhrIK9EG2ZYqgaPvh3-LAyh_F2ZAxIoHHO0aW-yPWBkxeZso}
+    api-key-header: ${FAROTY_API_KEY_HEADER:Authorization}
+    currency: ${FAROTY_CURRENCY:XAF}
 
 logging:
   level:

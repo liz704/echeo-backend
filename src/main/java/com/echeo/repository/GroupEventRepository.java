@@ -35,4 +35,13 @@ public interface GroupEventRepository extends JpaRepository<GroupEvent, Long> {
     // Événements dont l'échéance est dépassée, pour le job de relances en
     // rafale (J+1, J+3, J+7 après échéance) et le passage en OVERDUE.
     List<GroupEvent> findByEventDateBefore(LocalDate date);
+
+    /** Événements dont la date est dans l'intervalle (fenêtre de relances). */
+    List<GroupEvent> findByEventDateBetween(LocalDate from, LocalDate to);
+
+    /** Occurrences dont la dette de l'occurrence précédente n'a pas encore été reportée. */
+    List<GroupEvent> findByCarryAppliedFalseAndEventDateLessThanEqualOrderByEventDateAsc(LocalDate date);
+
+    /** Vrai si une occurrence suivante (déjà arrivée à échéance) a pris le relais de cet événement. */
+    boolean existsByPreviousEventIdAndEventDateLessThanEqual(Long previousEventId, LocalDate date);
 }

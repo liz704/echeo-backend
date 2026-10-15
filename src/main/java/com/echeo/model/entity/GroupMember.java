@@ -59,6 +59,10 @@ public class GroupMember {
     @Column(name = "external_phone")
     private String externalPhone;
 
+    // Langue des messages envoyés à ce membre ("fr" ou "en"), facultative.
+    @Column(name = "preferred_locale", length = 5)
+    private String preferredLocale;
+
     @Column(name = "joined_at", nullable = false, updatable = false)
     private OffsetDateTime joinedAt;
 
@@ -100,6 +104,14 @@ public class GroupMember {
 
     public boolean isRegisteredUser() {
         return user != null;
+    }
+
+    public String getPreferredLocale() {
+        return preferredLocale;
+    }
+
+    public void setPreferredLocale(String preferredLocale) {
+        this.preferredLocale = preferredLocale;
     }
 
     public Long getId() {

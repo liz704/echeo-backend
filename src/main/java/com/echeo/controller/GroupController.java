@@ -96,6 +96,13 @@ public class GroupController {
         return ResponseEntity.ok(groupService.listMembers(groupId));
     }
 
+    /** Change la langue (fr/en) des messages envoyés à un membre ; locale vide = langue du propriétaire. */
+    @PatchMapping("/{groupId}/members/{memberId}/locale")
+    public ResponseEntity<GroupMember> updateMemberLocale(@PathVariable Long groupId, @PathVariable Long memberId,
+                                                          @RequestBody java.util.Map<String, String> body) {
+        return ResponseEntity.ok(groupService.updateMemberLocale(groupId, memberId, body.get("preferredLocale")));
+    }
+
     @DeleteMapping("/{groupId}/members/{memberId}")
     public ResponseEntity<Void> removeMember(@PathVariable Long groupId, @PathVariable Long memberId,
                                               @AuthenticationPrincipal CustomUserDetails currentUser) {

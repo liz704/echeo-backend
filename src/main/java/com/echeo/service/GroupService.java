@@ -220,15 +220,47 @@ public class GroupService {
             }
             member.setUser(user);
         } else {
-            if (groupMemberRepository.existsByGroup_IdAndExternalEmail(groupId, request.getEmail())) {
-                throw new InvalidArgumentException("Un membre avec cet email fait déjà partie du groupe.");
-            }
-            member.setExternalFullName(request.getFullName());
             ContactValidation.validateEmailFormat(request.getEmail());
-            member.setExternalEmail(request.getEmail().trim().toLowerCase());
-            member.setExternalPhone(ContactValidation.normalizeAndValidatePhone(request.getPhone()));
+            String email = request.getEmail().trim().toLowerCase();
+            // Si un compte ÉCHÉO existe déjà pour cet email → membre inscrit (pas externe)
+            java.util.Optional<User> existingUser = userRepository.findByEmail(email);
+            if (existingUser.isPresent()) {
+                User user = existingUser.get();
+                if (groupMemberRepository.existsByGroup_IdAndUser_Id(groupId, user.getId())) {
+                    throw new InvalidArgumentException("Cet utilisateur est déjà membre du groupe.");
+                }
+                member.setUser(user);
+                // Garde le nom/téléphone saisis si le profil est vide (optionnel : on ne force pas)
+            } else {
+                if (groupMemberRepository.existsByGroup_IdAndExternalEmail(groupId, email)) {
+                    throw new InvalidArgumentException("Un membre avec cet email fait déjà partie du groupe.");
+                }
+                member.setExternalFullName(request.getFullName());
+                member.setExternalEmail(email);
+                member.setExternalPhone(ContactValidation.normalizeAndValidatePhone(request.getPhone()));
+            }
         }
 
+        member.setPreferredLocale(cleanLocale(request.getPreferredLocale()));
+        return groupMemberRepository.save(member);
+    }
+
+    private String cleanLocale(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        return raw.trim().toLowerCase().startsWith("en") ? "en" : "fr";
+    }
+
+    /** Modifie (ou efface avec null/vide) la langue des messages d'un membre. */
+    @Transactional
+    public GroupMember updateMemberLocale(Long groupId, Long memberId, String locale) {
+        GroupMember member = groupMemberRepository.findById(memberId)
+                .orElseThrow(() -> new EntityNotFoundException("GroupMember", memberId));
+        if (!member.getGroup().getId().equals(groupId)) {
+            throw new InvalidArgumentException("Le membre " + memberId + " n'appartient pas à ce groupe.");
+        }
+        member.setPreferredLocale(cleanLocale(locale));
         return groupMemberRepository.save(member);
     }
 
@@ -301,6 +333,7 @@ public class GroupService {
         detail.setTitle(event.getTitle());
         detail.setDescription(event.getDescription());
         detail.setTargetAmount(event.getTargetAmount());
+        detail.setReminderDaysBefore(event.getReminderDaysBefore());
         detail.setWithdrawalFeeAmount(event.getWithdrawalFeeAmount());
         detail.setEventDate(event.getEventDate());
         detail.setEventTime(event.getEventTime());
@@ -382,7 +415,7 @@ public class GroupService {
      * un seul membre, plusieurs, ou tout le groupe — au choix de l'appelant).
      * Le montant requis par membre est :
      * - celui fourni dans requiredAmountsByGroupMemberId si présent pour ce membre,
-     * - sinon targetAmount réparti également entre les membres listés.
+     * - sinon targetAmount : CHAQUE membre doit ce montant (pas de division).
      */
     @Transactional
     public GroupEvent createEvent(Long groupId, GroupEventRequest request) {
@@ -401,23 +434,12 @@ public class GroupService {
         event.setEventTime(request.getEventTime());
         event.setWithdrawalFeeAmount(request.getWithdrawalFeeAmount());
         event.setRepetitionType(request.getRepetitionType() != null ? request.getRepetitionType() : RepetitionType.NONE);
+        event.setReminderDaysBefore(com.echeo.util.ReminderPlan.normalize(request.getReminderDaysBefore()));
         event = groupEventRepository.save(event);
 
         Map<Long, BigDecimal> customAmounts = request.getRequiredAmountsByGroupMemberId();
         boolean hasMoney = event.hasMoney();
         List<Long> memberIds = request.getGroupMemberIds();
-        int memberCount = memberIds.size();
-
-        // Pré-calcule les parts égales avec reste d'arrondi sur le dernier
-        // membre (uniquement si pas de montants personnalisés).
-        boolean useEqualShare = hasMoney && (customAmounts == null || customAmounts.isEmpty());
-        BigDecimal equalShare = null;
-        BigDecimal remainderForLast = null;
-        if (useEqualShare) {
-            equalShare = request.getTargetAmount().divide(BigDecimal.valueOf(memberCount), 2, RoundingMode.HALF_UP);
-            BigDecimal assigned = equalShare.multiply(BigDecimal.valueOf(memberCount - 1));
-            remainderForLast = request.getTargetAmount().subtract(assigned);
-        }
 
         int index = 0;
         for (Long groupMemberId : memberIds) {
@@ -437,10 +459,9 @@ public class GroupService {
                 BigDecimal required;
                 if (customAmounts != null && customAmounts.containsKey(groupMemberId)) {
                     required = customAmounts.get(groupMemberId);
-                } else if (useEqualShare && index == memberCount - 1) {
-                    required = remainderForLast;
                 } else {
-                    required = equalShare;
+                    // Chaque membre paie le montant saisi (pas de division).
+                    required = request.getTargetAmount();
                 }
                 status.setRequiredAmount(required);
                 status.setPaidAmount(BigDecimal.ZERO);
@@ -494,6 +515,9 @@ public class GroupService {
         if (request.getRepetitionType() != null) {
             event.setRepetitionType(request.getRepetitionType());
         }
+        if (request.getReminderDaysBefore() != null) {
+            event.setReminderDaysBefore(com.echeo.util.ReminderPlan.normalize(request.getReminderDaysBefore()));
+        }
         event = groupEventRepository.save(event);
 
         // Si le montant cible change et qu'aucun paiement n'a encore été
@@ -511,10 +535,8 @@ public class GroupService {
     }
 
     /**
-     * Répartit targetAmount de façon égale entre les membres de l'événement,
-     * uniquement si personne n'a encore payé (paid_amount == 0 pour tous).
-     * Le reste d'arrondi est attribué au dernier membre pour que la somme
-     * des required_amount soit exactement égale au montant cible.
+     * Applique le nouveau montant à chaque membre, uniquement si personne
+     * n'a encore payé (paid_amount == 0 pour tous).
      */
     private void redistributeRequiredAmountsIfNoPayments(GroupEvent event) {
         List<EventMemberStatus> statuses = eventMemberStatusRepository.findByEvent_Id(event.getId());
@@ -529,23 +551,11 @@ public class GroupService {
             return;
         }
 
+        // Chaque membre doit le montant saisi (pas de division).
         BigDecimal target = event.getTargetAmount();
-        int n = statuses.size();
-        BigDecimal equalShare = target.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP);
-        BigDecimal assigned = BigDecimal.ZERO;
-
-        for (int i = 0; i < n; i++) {
-            EventMemberStatus status = statuses.get(i);
-            BigDecimal required;
-            if (i == n - 1) {
-                // Dernier membre : prend le reste pour absorber l'arrondi.
-                required = target.subtract(assigned);
-            } else {
-                required = equalShare;
-                assigned = assigned.add(equalShare);
-            }
-            status.setRequiredAmount(required);
-            status.setStatus(required.compareTo(BigDecimal.ZERO) == 0
+        for (EventMemberStatus status : statuses) {
+            status.setRequiredAmount(target);
+            status.setStatus(target.compareTo(BigDecimal.ZERO) == 0
                     ? PaymentStatus.PAID
                     : PaymentStatus.PENDING);
             eventMemberStatusRepository.save(status);
@@ -598,6 +608,7 @@ public class GroupService {
     public void runDailyGroupEventLifecycle() {
         markOverdueStatuses();
         generateRecurringOccurrences();
+        applyDeferredCarryOvers();
     }
 
     /**
@@ -688,6 +699,11 @@ public class GroupService {
         next.setWithdrawalFeeAmount(source.getWithdrawalFeeAmount());
         next.setRepetitionType(source.getRepetitionType());
         next.setPaused(false);
+        next.setReminderDaysBefore(source.getReminderDaysBefore());
+        next.setPreviousEventId(source.getId());
+        // La dette de l'occurrence précédente ne sera reportée qu'à la date de
+        // CETTE occurrence (applyDeferredCarryOvers), pas avant.
+        next.setCarryApplied(!source.hasMoney());
         // nextOccurrence reste null : l'occurrence suivante sera générée
         // quand cette date sera atteinte (et non en pause).
         return next;
@@ -709,19 +725,15 @@ public class GroupService {
             newStatus.setGroupMember(previous.getGroupMember());
 
             if (hasMoney) {
-                BigDecimal baseRequired = previous.getRequiredAmount() != null
-                        ? previous.getRequiredAmount() : BigDecimal.ZERO;
-                BigDecimal paid = previous.getPaidAmount() != null
-                        ? previous.getPaidAmount() : BigDecimal.ZERO;
-                // Positif si surplus, négatif si encore dû.
-                BigDecimal carry = paid.subtract(baseRequired);
-                BigDecimal newRequired = baseRequired.subtract(carry);
-                if (newRequired.compareTo(BigDecimal.ZERO) < 0) {
-                    newRequired = BigDecimal.ZERO;
-                }
-                newStatus.setRequiredAmount(newRequired);
+                // Le montant de base est inchangé ; le report de dette / surplus
+                // est appliqué plus tard (applyDeferredCarryOvers) à la date
+                // de la nouvelle occurrence.
+                BigDecimal base = nextEvent.getTargetAmount() != null
+                        ? nextEvent.getTargetAmount()
+                        : (previous.getRequiredAmount() != null ? previous.getRequiredAmount() : BigDecimal.ZERO);
+                newStatus.setRequiredAmount(base);
                 newStatus.setPaidAmount(BigDecimal.ZERO);
-                newStatus.setStatus(newRequired.compareTo(BigDecimal.ZERO) == 0
+                newStatus.setStatus(base.compareTo(BigDecimal.ZERO) == 0
                         ? PaymentStatus.PAID
                         : PaymentStatus.PENDING);
             } else {
@@ -732,6 +744,42 @@ public class GroupService {
             }
 
             eventMemberStatusRepository.save(newStatus);
+        }
+    }
+
+    /**
+     * Report de dette à la date de la nouvelle occurrence : ce qui restait dû
+     * (ou le surplus) de l'occurrence précédente s'ajoute (ou se déduit) du
+     * montant de cette occurrence. Le calcul ne dépend que de l'état de
+     * l'occurrence précédente au moment du report. Appliqué une seule fois.
+     */
+    @Transactional
+    public void applyDeferredCarryOvers() {
+        LocalDate today = LocalDate.now(ZONE_DOUALA);
+        List<GroupEvent> pending = groupEventRepository
+                .findByCarryAppliedFalseAndEventDateLessThanEqualOrderByEventDateAsc(today);
+        for (GroupEvent event : pending) {
+            if (event.getPreviousEventId() != null) {
+                List<EventMemberStatus> statuses = eventMemberStatusRepository.findByEvent_Id(event.getId());
+                for (EventMemberStatus status : statuses) {
+                    eventMemberStatusRepository
+                            .findFirstByEvent_IdAndGroupMember_Id(event.getPreviousEventId(), status.getGroupMember().getId())
+                            .ifPresent(prev -> {
+                                BigDecimal base = status.getRequiredAmount() != null
+                                        ? status.getRequiredAmount() : BigDecimal.ZERO;
+                                BigDecimal prevRequired = com.echeo.util.PaymentRules.nz(prev.getRequiredAmount());
+                                BigDecimal prevPaid = com.echeo.util.PaymentRules.nz(prev.getPaidAmount());
+                                BigDecimal newRequired = com.echeo.util.RecurrenceCarry.nextRequired(
+                                        base, prevRequired, prevPaid);
+                                status.setRequiredAmount(newRequired);
+                                status.setStatus(newRequired.signum() == 0 ? PaymentStatus.PAID : PaymentStatus.PENDING);
+                                eventMemberStatusRepository.save(status);
+                            });
+                }
+            }
+            event.setCarryApplied(true);
+            groupEventRepository.save(event);
+            log.info("Report de dette appliqué sur l'occurrence {}", event.getId());
         }
     }
 

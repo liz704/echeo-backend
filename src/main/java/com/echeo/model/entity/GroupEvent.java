@@ -84,6 +84,20 @@ public class GroupEvent {
     @Column(name = "is_paused", nullable = false)
     private boolean paused = false;
 
+    // Jours de relance AVANT l'échéance choisis par l'organisateur, séparés
+    // par des virgules (ex. "3,1,0" ; 0 = le jour même). Null = historique (7,3,0).
+    @Column(name = "reminder_days_before", length = 40)
+    private String reminderDaysBefore;
+
+    // Occurrence précédente d'un événement récurrent (null pour la première).
+    @Column(name = "previous_event_id")
+    private Long previousEventId;
+
+    // false tant que la dette de l'occurrence précédente n'a pas été reportée
+    // sur celle-ci (le report se fait à la date de cette occurrence).
+    @Column(name = "carry_applied", nullable = false)
+    private boolean carryApplied = true;
+
     // Suppression réelle en cascade : effacer un événement doit
     // effacer tous les statuts de paiement associés.
     @JsonIgnore
@@ -91,6 +105,30 @@ public class GroupEvent {
     private List<EventMemberStatus> memberStatuses = new ArrayList<>();
 
     public GroupEvent() {
+    }
+
+    public String getReminderDaysBefore() {
+        return reminderDaysBefore;
+    }
+
+    public void setReminderDaysBefore(String reminderDaysBefore) {
+        this.reminderDaysBefore = reminderDaysBefore;
+    }
+
+    public Long getPreviousEventId() {
+        return previousEventId;
+    }
+
+    public void setPreviousEventId(Long previousEventId) {
+        this.previousEventId = previousEventId;
+    }
+
+    public boolean isCarryApplied() {
+        return carryApplied;
+    }
+
+    public void setCarryApplied(boolean carryApplied) {
+        this.carryApplied = carryApplied;
     }
 
     public Long getId() {

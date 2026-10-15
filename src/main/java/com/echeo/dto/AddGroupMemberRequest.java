@@ -22,6 +22,17 @@ public class AddGroupMemberRequest {
 
     private String phone;
 
+    // "fr" ou "en" (facultatif).
+    private String preferredLocale;
+
+    public String getPreferredLocale() {
+        return preferredLocale;
+    }
+
+    public void setPreferredLocale(String preferredLocale) {
+        this.preferredLocale = preferredLocale;
+    }
+
     public Long getUserId() {
         return userId;
     }

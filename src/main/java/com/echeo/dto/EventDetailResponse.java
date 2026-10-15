@@ -25,6 +25,7 @@ public class EventDetailResponse {
     private RepetitionType repetitionType;
     private boolean paused;
     private boolean hasMoney;
+    private String reminderDaysBefore;
     private List<EventMemberDetailItem> members = new ArrayList<>();
 
     public Long getEventId() { return eventId; }
@@ -51,4 +52,12 @@ public class EventDetailResponse {
     public void setHasMoney(boolean hasMoney) { this.hasMoney = hasMoney; }
     public List<EventMemberDetailItem> getMembers() { return members; }
     public void setMembers(List<EventMemberDetailItem> members) { this.members = members; }
+
+    public String getReminderDaysBefore() {
+        return reminderDaysBefore;
+    }
+
+    public void setReminderDaysBefore(String reminderDaysBefore) {
+        this.reminderDaysBefore = reminderDaysBefore;
+    }
 }
