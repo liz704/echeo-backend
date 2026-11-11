@@ -1,0 +1,79 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 1) Compile and run tests against a real PostgreSQL database (Flyway applies the migrations)
+  test:
+    name: Build & tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: echeo
+          POSTGRES_USER: echeo
+          POSTGRES_PASSWORD: echeo
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U echeo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/echeo
+      SPRING_DATASOURCE_USERNAME: echeo
+      SPRING_DATASOURCE_PASSWORD: echeo
+      ECHEO_JWT_SECRET: ci-only-secret-ci-only-secret-ci-only-secret-123456
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Maven verify
+        run: mvn -B verify
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: target/surefire-reports
+
+  # 2) Check that the Docker image (the one used on Render) builds
+  docker:
+    name: Docker build
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t echeo-backend:${{ github.sha }} .
+
+  # 3) Deploy: only on main, and only if everything above is green
+  deploy:
+    name: Deploy to Render
+    needs: [test, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Trigger the Render deployment (deploy hook)
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+      - name: Health check (can take a few minutes)
+        run: |
+          URL="${{ vars.BACKEND_URL }}/api/v1/public/pay/online-available"
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 30 "$URL"; then echo; echo "API is up"; exit 0; fi
+            echo "Not ready yet ($i/20)..."; sleep 30
+          done
+          echo "The API is not responding"; exit 1

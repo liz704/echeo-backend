@@ -27,20 +27,19 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import java.util.List;
 
 /**
- * Configuration centrale de Spring Security pour ÉCHÉO :
- * - API stateless (pas de session HTTP, tout repose sur le JWT).
- * - /api/v1/auth/** et /api/v1/public/** accessibles sans authentification.
- * - Toute autre route nécessite un JWT valide (filtre JwtAuthenticationFilter).
- * - CORS ouvert au frontend Next.js.
+ * Central Spring Security configuration for ÉCHÉO:
+ * - Stateless API (no HTTP session, everything relies on the JWT).
+ * - /api/v1/auth/** and /api/v1/public/** are reachable without authentication.
+ * - Every other route needs a valid JWT (JwtAuthenticationFilter).
+ * - CORS is open to the Next.js frontend.
  *
- * IMPORTANT : sans point d'entrée personnalisé, Spring Security répond aux
- * requêtes non authentifiées par un 403 VIDE (Http403ForbiddenEntryPoint par
- * défaut) — le frontend, lui, ne sait réagir qu'à un 401 pour déconnecter et
- * renvoyer vers /login. authenticationEntryPoint() ci-dessous corrige ça en
- * renvoyant un vrai 401 avec un corps JSON cohérent avec le reste de l'API
- * (ErrorResponse). accessDeniedHandler() fait de même pour un 403
- * "authentifié mais non autorisé" (ex. accès à la ressource d'un autre
- * utilisateur), qui lui doit bien rester un 403.
+ * IMPORTANT: without a custom entry point, Spring Security answers unauthenticated
+ * requests with an EMPTY 403 (default Http403ForbiddenEntryPoint), while the
+ * frontend only reacts to a 401 to log the user out and redirect to /login.
+ * authenticationEntryPoint() below fixes this by returning a real 401 with a JSON
+ * body consistent with the rest of the API (ErrorResponse). accessDeniedHandler()
+ * does the same for a 403 "authenticated but not allowed" (e.g. accessing another
+ * user's resource), which must remain a 403.
  */
 @Configuration
 @EnableWebSecurity
@@ -80,8 +79,8 @@ public class SecurityConfig {
     }
 
     /**
-     * Requête sans JWT, JWT malformé, expiré ou signature invalide : 401,
-     * jamais 403 (voir note de classe ci-dessus).
+     * Request without a JWT, or with a malformed, expired or badly signed JWT: 401,
+     * never 403 (see the class note above).
      */
     @Bean
     public AuthenticationEntryPoint authenticationEntryPoint() {
@@ -91,8 +90,8 @@ public class SecurityConfig {
     }
 
     /**
-     * Requête authentifiée mais interdite (ex. ressource d'un autre
-     * utilisateur) : reste un vrai 403, avec corps JSON cette fois.
+     * Authenticated but forbidden request (e.g. another user's resource):
+     * stays a real 403, this time with a JSON body.
      */
     @Bean
     public AccessDeniedHandler accessDeniedHandler() {
@@ -123,7 +122,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/auth/**").permitAll()
                         .requestMatchers("/api/v1/public/**").permitAll()
-                        // UptimeRobot / cron : doit répondre 200 sans JWT
+                        // UptimeRobot / cron: must answer 200 without a JWT
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers("/").permitAll()
                         .anyRequest().authenticated()
@@ -135,7 +134,7 @@ public class SecurityConfig {
     }
 
     /**
-     * Autorise le frontend Next.js en dev (localhost:3000) et en prod (Vercel).
+     * Allows the Next.js frontend in dev (localhost:3000) and in prod (Vercel).
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
@@ -146,7 +145,7 @@ public class SecurityConfig {
                 frontendBaseUrl,
                 "https://echeo-one.vercel.app"
         ));
-        // Previews Vercel + localhost : évite les blocages CORS (souvent vus sur WiFi d'entreprise)
+        // Vercel previews + localhost: avoids CORS blocks (often seen on corporate WiFi)
         configuration.setAllowedOriginPatterns(List.of(
                 "https://*.vercel.app",
                 "http://localhost:*",

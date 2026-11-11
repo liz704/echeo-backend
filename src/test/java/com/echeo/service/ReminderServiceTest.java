@@ -1,5 +1,6 @@
 package com.echeo.service;
 
+import com.echeo.exception.InvalidArgumentException;
 import com.echeo.model.entity.PersonalReminder;
 import com.echeo.model.entity.User;
 import com.echeo.model.enums.RepetitionType;
@@ -14,12 +15,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -78,6 +82,62 @@ class ReminderServiceTest {
         assertThat(result.isCompleted()).isTrue();
         assertThat(result.getNextOccurrence()).isNull();
         verify(reminderRepository, times(1)).save(any());
+    }
+
+    @Test
+    void pauseReminder_marksTheReminderAsPaused() {
+        PersonalReminder reminder = buildReminder(3L, LocalDate.of(2026, 1, 1), RepetitionType.DAILY);
+        when(reminderRepository.findById(3L)).thenReturn(Optional.of(reminder));
+
+        PersonalReminder result = reminderService.pauseReminder(3L);
+
+        assertThat(result.isPaused()).isTrue();
+    }
+
+    @Test
+    void pauseReminder_refusesACompletedReminder() {
+        PersonalReminder reminder = buildReminder(4L, LocalDate.of(2026, 1, 1), RepetitionType.NONE);
+        reminder.setCompleted(true);
+        when(reminderRepository.findById(4L)).thenReturn(Optional.of(reminder));
+
+        assertThatThrownBy(() -> reminderService.pauseReminder(4L)).isInstanceOf(InvalidArgumentException.class);
+    }
+
+    @Test
+    void resumeReminder_recurring_jumpsToTheNextFutureOccurrence() {
+        PersonalReminder reminder = buildReminder(5L, LocalDate.of(2026, 1, 1), RepetitionType.WEEKLY);
+        reminder.setPaused(true);
+        when(reminderRepository.findById(5L)).thenReturn(Optional.of(reminder));
+
+        PersonalReminder result = reminderService.resumeReminder(5L, LocalDate.of(2026, 1, 20));
+
+        assertThat(result.isPaused()).isFalse();
+        assertThat(result.getDueDate()).isEqualTo(LocalDate.of(2026, 1, 22));
+    }
+
+    @Test
+    void resumeReminder_nonRecurring_keepsItsDueDate() {
+        PersonalReminder reminder = buildReminder(6L, LocalDate.of(2026, 1, 1), RepetitionType.NONE);
+        reminder.setPaused(true);
+        when(reminderRepository.findById(6L)).thenReturn(Optional.of(reminder));
+
+        PersonalReminder result = reminderService.resumeReminder(6L, LocalDate.of(2026, 1, 20));
+
+        assertThat(result.isPaused()).isFalse();
+        assertThat(result.getDueDate()).isEqualTo(LocalDate.of(2026, 1, 1));
+    }
+
+    @Test
+    void rollForwardOverdueRecurring_ignoresPausedReminders() {
+        PersonalReminder reminder = buildReminder(7L, LocalDate.of(2026, 1, 1), RepetitionType.DAILY);
+        reminder.setPaused(true);
+        when(reminderRepository.findAll()).thenReturn(List.of(reminder));
+
+        int rolled = reminderService.rollForwardOverdueRecurring(
+                LocalDate.of(2026, 1, 10), LocalDateTime.of(2026, 1, 10, 12, 0));
+
+        assertThat(rolled).isZero();
+        verify(reminderRepository, never()).save(any());
     }
 
     private PersonalReminder buildReminder(Long id, LocalDate dueDate, RepetitionType type) {

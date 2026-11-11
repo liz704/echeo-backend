@@ -16,6 +16,7 @@ public class ReminderResponse {
     private RepetitionType repetitionType;
     private boolean completed;
     private LocalDate nextOccurrence;
+    private boolean paused;
 
     public static ReminderResponse from(PersonalReminder reminder) {
         ReminderResponse response = new ReminderResponse();
@@ -27,6 +28,7 @@ public class ReminderResponse {
         response.repetitionType = reminder.getRepetitionType();
         response.completed = reminder.isCompleted();
         response.nextOccurrence = reminder.getNextOccurrence();
+        response.paused = reminder.isPaused();
         return response;
     }
 
@@ -60,5 +62,9 @@ public class ReminderResponse {
 
     public LocalDate getNextOccurrence() {
         return nextOccurrence;
+    }
+
+    public boolean isPaused() {
+        return paused;
     }
 }

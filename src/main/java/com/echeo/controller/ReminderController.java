@@ -23,8 +23,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * CRUD des rappels personnels, scopé strictement à l'utilisateur authentifié
- * (récupéré depuis le JWT via @AuthenticationPrincipal — voir JwtAuthenticationFilter).
+ * CRUD for personal reminders, strictly scoped to the authenticated user
+ * (taken from the JWT through @AuthenticationPrincipal, see JwtAuthenticationFilter).
+ * Also exposes complete / pause / resume actions.
  */
 @RestController
 @RequestMapping("/api/v1/reminders")
@@ -70,7 +71,7 @@ public class ReminderController {
     public ResponseEntity<ReminderResponse> update(@PathVariable Long id,
                                                      @Valid @RequestBody ReminderRequest request,
                                                      @AuthenticationPrincipal CustomUserDetails currentUser) {
-        // Vérifie la propriété avant modification (404 si le rappel n'appartient pas à l'utilisateur).
+        // Checks ownership before updating (404 if the reminder does not belong to the user).
         reminderService.getOwnedReminder(id, currentUser.getUserId());
 
         PersonalReminder updatedData = new PersonalReminder();
@@ -93,6 +94,20 @@ public class ReminderController {
         return ResponseEntity.ok(ReminderResponse.from(completed));
     }
 
+    @PatchMapping("/{id}/pause")
+    public ResponseEntity<ReminderResponse> pause(@PathVariable Long id,
+                                                    @AuthenticationPrincipal CustomUserDetails currentUser) {
+        reminderService.getOwnedReminder(id, currentUser.getUserId());
+        return ResponseEntity.ok(ReminderResponse.from(reminderService.pauseReminder(id)));
+    }
+
+    @PatchMapping("/{id}/resume")
+    public ResponseEntity<ReminderResponse> resume(@PathVariable Long id,
+                                                     @AuthenticationPrincipal CustomUserDetails currentUser) {
+        reminderService.getOwnedReminder(id, currentUser.getUserId());
+        return ResponseEntity.ok(ReminderResponse.from(reminderService.resumeReminder(id)));
+    }
+
     @GetMapping("/history")
     public ResponseEntity<List<ReminderResponse>> history(@AuthenticationPrincipal CustomUserDetails currentUser) {
         List<ReminderResponse> history = reminderService.listHistoryForUser(currentUser.getUserId()).stream()
@@ -102,7 +117,7 @@ public class ReminderController {
     }
 
     /**
-     * Vide tout l'historique des rappels terminés de l'utilisateur courant.
+     * Clears the whole history of completed reminders of the current user.
      */
     @DeleteMapping("/history")
     public ResponseEntity<Void> deleteHistory(@AuthenticationPrincipal CustomUserDetails currentUser) {
