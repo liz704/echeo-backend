@@ -22,20 +22,19 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 /**
- * Envoi des rappels personnels à l'heure précise réglée par l'utilisateur
- * (due_date + due_time). Contrairement à une tâche unique quotidienne, ce
- * job tourne toutes les minutes et compare l'échéance exacte à l'instant
- * présent, pour respecter l'heure choisie au lieu d'un envoi groupé le matin.
+ * Sends personal reminders at the exact time chosen by the user
+ * (due_date + due_time). Unlike a single daily task, this job runs every minute
+ * and compares the exact due time with the current instant, so the chosen time is
+ * respected instead of a grouped morning send.
  *
- * - Si due_time n'est pas renseignée, l'envoi a lieu à DEFAULT_TIME (08:00),
- *   pour rester cohérent avec les rappels créés avant l'ajout de ce champ.
- * - notification_sent_at sert de verrou anti-doublon : un rappel n'est
- *   envoyé qu'une seule fois (voir ReminderService pour le ré-armement en
- *   cas de modification de la date/heure).
- * - Le filtre "due_date <= aujourd'hui" (et non "= aujourd'hui") permet un
- *   rattrapage automatique : si le serveur a été indisponible pendant
- *   l'heure prévue, le rappel part dès que possible au retour, plutôt que
- *   d'être perdu.
+ * - If due_time is not set, the e-mail is sent at DEFAULT_TIME (08:00), to stay
+ *   consistent with reminders created before this field existed.
+ * - notification_sent_at is an anti-duplicate lock: a reminder is sent only once
+ *   (see ReminderService for the re-arming when the date/time is modified).
+ * - Paused reminders are skipped.
+ * - The "due_date <= today" filter (not "= today") gives an automatic catch-up:
+ *   if the server was down at the planned time, the reminder is sent as soon as it
+ *   is back instead of being lost.
  */
 @Service
 public class PersonalReminderNotificationService {
@@ -63,9 +62,8 @@ public class PersonalReminderNotificationService {
     }
 
     /**
-     * Exécutée toutes les minutes. Le volume par utilisateur reste faible
-     * (rappels personnels), donc scruter à cette fréquence est sans risque
-     * de performance.
+     * Runs every minute. The volume per user stays low (personal reminders), so
+     * polling at this frequency is safe for performance.
      */
     @Scheduled(cron = "0 * * * * *")
     @Transactional
@@ -83,11 +81,14 @@ public class PersonalReminderNotificationService {
         int sent = 0;
         int skippedTime = 0;
         for (PersonalReminder reminder : candidates) {
+            if (reminder.isPaused()) {
+                continue;
+            }
             LocalTime effectiveTime = reminder.getDueTime() != null ? reminder.getDueTime() : DEFAULT_TIME;
             LocalDateTime triggerAt = reminder.getDueDate().atTime(effectiveTime);
 
-            // Date déjà dépassée (hier ou avant) → envoi immédiat, sans attendre l'heure.
-            // Date = aujourd'hui → on attend l'heure réglée.
+            // Date already past (yesterday or before) -> send immediately, without waiting for the time.
+            // Date = today -> wait for the chosen time.
             boolean dateFullyPast = reminder.getDueDate().isBefore(today);
             if (!dateFullyPast && now.isBefore(triggerAt)) {
                 skippedTime++;
@@ -106,7 +107,7 @@ public class PersonalReminderNotificationService {
             log.info("Rappels perso: envoyés={}, reportés (heure pas atteinte)={}", sent, skippedTime);
         }
 
-        // Récurrence sans argent : avancer auto si l'échéance est passée sans "Fait"
+        // Recurrence without money: advance automatically if the due date passed without "Done"
         try {
             int rolled = reminderService.rollForwardOverdueRecurring(today, now);
             if (rolled > 0) {
@@ -124,8 +125,8 @@ public class PersonalReminderNotificationService {
             return;
         }
 
-        // Anciens rappels (avant V9) peuvent n'avoir aucun jeton : on en génère
-        // un à l'envoi pour que le lien "marquer fait" fonctionne toujours.
+        // Old reminders (before V9) may have no token: generate one at send time so the
+        // "mark as done" link always works.
         if (reminder.getPublicCompletionToken() == null) {
             reminder.setPublicCompletionToken(java.util.UUID.randomUUID());
             reminderRepository.save(reminder);
@@ -137,8 +138,8 @@ public class PersonalReminderNotificationService {
         String subject = "en".equalsIgnoreCase(locale)
                 ? ("ÉCHÉO — Reminder: " + reminder.getTitle())
                 : ("ÉCHÉO — Rappel : " + reminder.getTitle());
-        // L'envoi est journalisé ; s'il échoue il sera renvoyé automatiquement
-        // (NotificationDispatchService), donc le rappel est considéré comme traité.
+        // The send is logged; if it fails it is retried automatically
+        // (NotificationDispatchService), so the reminder is considered handled.
         dispatchService.sendEmail(user.getEmail(), subject, message);
 
         reminder.setNotificationSentAt(OffsetDateTime.now());

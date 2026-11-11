@@ -13,8 +13,8 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Logique métier des rappels personnels : création, modification,
- * complétion avec gestion de la récurrence, et suppression réelle (hard-delete).
+ * Business logic for personal reminders: creation, update, completion with
+ * recurrence handling, pause / resume, and real deletion (hard delete).
  */
 @Service
 public class ReminderService {
@@ -26,13 +26,14 @@ public class ReminderService {
     }
 
     /**
-     * Crée un nouveau rappel personnel après validation métier de base.
+     * Creates a new personal reminder after basic business validation.
      */
     @Transactional
     public PersonalReminder createReminder(PersonalReminder reminder) {
         validateReminder(reminder);
         reminder.setId(null);
         reminder.setCompleted(false);
+        reminder.setPaused(false);
         reminder.setNextOccurrence(null);
         reminder.setNotificationSentAt(null);
         reminder.setPublicCompletionToken(java.util.UUID.randomUUID());
@@ -40,9 +41,9 @@ public class ReminderService {
     }
 
     /**
-     * Met à jour un rappel existant (titre, description, date/heure, récurrence).
-     * Ne modifie jamais l'utilisateur propriétaire, ni le statut is_completed
-     * (voir markAsCompleted pour ce dernier).
+     * Updates an existing reminder (title, description, date/time, recurrence).
+     * Never changes the owner nor the is_completed status
+     * (see markAsCompleted for the latter).
      */
     @Transactional
     public PersonalReminder updateReminder(Long reminderId, PersonalReminder updatedData) {
@@ -63,8 +64,8 @@ public class ReminderService {
         existing.setDueTime(updatedData.getDueTime());
         existing.setRepetitionType(updatedData.getRepetitionType());
 
-        // Si la date/heure change, on ré-arme le rappel pour qu'il puisse
-        // être renotifié au nouveau moment, même s'il avait déjà été envoyé.
+        // If the date/time changes, the reminder is re-armed so it can be notified
+        // again at the new time, even if it had already been sent.
         if (scheduleChanged) {
             existing.setNotificationSentAt(null);
         }
@@ -73,12 +74,12 @@ public class ReminderService {
     }
 
     /**
-     * Marque un rappel comme terminé. Si le rappel est récurrent (repetitionType != NONE),
-     * calcule automatiquement la prochaine occurrence, la persiste comme nouveau rappel actif,
-     * et trace la date calculée sur le rappel courant (next_occurrence) à titre d'historique.
+     * Marks a reminder as done. If it is recurring (repetitionType != NONE), the next
+     * occurrence is computed automatically and saved as a new active reminder, and the
+     * computed date is recorded on the current reminder (next_occurrence) as history.
      *
-     * @return le rappel courant mis à jour (complété). La nouvelle occurrence, si créée,
-     *         est persistée en base mais n'est pas retournée par cette méthode.
+     * @return the updated (completed) current reminder. The new occurrence, if any, is
+     *         persisted but not returned by this method.
      */
     @Transactional
     public PersonalReminder markAsCompleted(Long reminderId) {
@@ -89,8 +90,8 @@ public class ReminderService {
         PersonalReminder current = reminderRepository.findById(reminderId)
                 .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));
 
-        // Idempotent : un second "marquer fait" (double-clic app ou lien email)
-        // ne doit pas régénérer une occurrence récurrente.
+        // Idempotent: a second "mark as done" (double click in the app or e-mail link)
+        // must not generate another recurring occurrence.
         if (current.isCompleted()) {
             return current;
         }
@@ -101,7 +102,7 @@ public class ReminderService {
         if (repetition != null && repetition != RepetitionType.NONE) {
             LocalDate nextDate = computeNextOccurrence(current.getDueDate(), repetition);
 
-            // Historique : on trace sur le rappel clôturé la date de la prochaine échéance générée.
+            // History: record on the closed reminder the date of the next generated due date.
             current.setNextOccurrence(nextDate);
             reminderRepository.save(current);
 
@@ -125,8 +126,68 @@ public class ReminderService {
     }
 
     /**
-     * Suppression réelle (hard-delete) en base. Aucune soft-delete/flag :
-     * la ligne disparaît physiquement de personal_reminders.
+     * Pauses a reminder: it stays in the active list but no e-mail is sent and a
+     * recurring reminder is not rolled forward until it is resumed.
+     */
+    @Transactional
+    public PersonalReminder pauseReminder(Long reminderId) {
+        PersonalReminder reminder = findOrThrow(reminderId);
+        if (reminder.isCompleted()) {
+            throw new InvalidArgumentException("Ce rappel est déjà terminé, rien à mettre en pause.");
+        }
+        reminder.setPaused(true);
+        return reminderRepository.save(reminder);
+    }
+
+    /** Resumes a paused reminder, using today's date in the application time zone. */
+    @Transactional
+    public PersonalReminder resumeReminder(Long reminderId) {
+        return resumeReminder(reminderId, LocalDate.now(java.time.ZoneId.of("Africa/Douala")));
+    }
+
+    /**
+     * Resumes a paused reminder. A recurring reminder whose due date went by while it
+     * was paused jumps to its next future occurrence (no history entry is created for
+     * the skipped ones) and is re-armed for notification.
+     */
+    @Transactional
+    public PersonalReminder resumeReminder(Long reminderId, LocalDate today) {
+        PersonalReminder reminder = findOrThrow(reminderId);
+        if (!reminder.isPaused()) {
+            return reminder;
+        }
+        reminder.setPaused(false);
+
+        RepetitionType repetition = reminder.getRepetitionType();
+        if (repetition != null && repetition != RepetitionType.NONE && reminder.getDueDate() != null) {
+            LocalDate due = reminder.getDueDate();
+            int safety = 0;
+            while (due.isBefore(today) && safety++ < 1000) {
+                LocalDate next = computeNextOccurrence(due, repetition);
+                if (next == null) {
+                    break;
+                }
+                due = next;
+            }
+            if (!due.equals(reminder.getDueDate())) {
+                reminder.setDueDate(due);
+                reminder.setNotificationSentAt(null);
+            }
+        }
+        return reminderRepository.save(reminder);
+    }
+
+    private PersonalReminder findOrThrow(Long reminderId) {
+        if (reminderId == null) {
+            throw new InvalidArgumentException("L'identifiant du rappel est obligatoire.");
+        }
+        return reminderRepository.findById(reminderId)
+                .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));
+    }
+
+    /**
+     * Real deletion (hard delete). No soft-delete flag: the row is physically
+     * removed from personal_reminders.
      */
     @Transactional
     public void deleteReminder(Long reminderId) {
@@ -140,8 +201,8 @@ public class ReminderService {
     }
 
     /**
-     * Vide l'historique des rappels terminés de l'utilisateur
-     * (ne touche pas aux rappels actifs).
+     * Clears the user's history of completed reminders
+     * (active reminders are left untouched).
      */
     @Transactional
     public void deleteHistoryForUser(Long userId) {
@@ -149,14 +210,9 @@ public class ReminderService {
     }
 
     /**
-     * Récupère un rappel appartenant strictement à l'utilisateur courant.
-     * Empêche un utilisateur A de lire/modifier le rappel d'un utilisateur B
-     * via une simple devinette d'identifiant.
-     */
-    /**
-     * Variante de markAsCompleted() via le jeton public du lien "marquer
-     * fait" reçu par email (voir PublicReminderController). Idempotent : si
-     * déjà complété, ne fait rien et renvoie l'état actuel.
+     * Variant of markAsCompleted() using the public token of the "mark as done"
+     * link received by e-mail (see PublicReminderController). Idempotent: if the
+     * reminder is already completed, nothing happens and the current state is returned.
      */
     @Transactional
     public PersonalReminder completeByPublicToken(java.util.UUID token) {
@@ -168,6 +224,10 @@ public class ReminderService {
         return markAsCompleted(reminder.getId());
     }
 
+    /**
+     * Returns a reminder that strictly belongs to the current user. Prevents user A
+     * from reading or modifying user B's reminder by simply guessing an identifier.
+     */
     public PersonalReminder getOwnedReminder(Long reminderId, Long userId) {
         PersonalReminder reminder = reminderRepository.findById(reminderId)
                 .orElseThrow(() -> new EntityNotFoundException("PersonalReminder", reminderId));
@@ -178,7 +238,7 @@ public class ReminderService {
     }
 
     /**
-     * Liste tous les rappels actifs (non complétés) de l'utilisateur, triés par échéance.
+     * Lists all active (not completed) reminders of the user, ordered by due date.
      */
     public List<PersonalReminder> listActiveForUser(Long userId) {
         return reminderRepository.findByUser_IdOrderByDueDateAsc(userId).stream()
@@ -187,7 +247,7 @@ public class ReminderService {
     }
 
     /**
-     * Historique des rappels déjà complétés pour l'utilisateur (endpoint /history).
+     * History of the user's already completed reminders (/history endpoint).
      */
     public List<PersonalReminder> listHistoryForUser(Long userId) {
         return reminderRepository.findByUser_IdOrderByDueDateAsc(userId).stream()
@@ -196,32 +256,29 @@ public class ReminderService {
     }
 
     /**
-     * Calcule la date de la prochaine occurrence en fonction du type de récurrence.
-     */
-
-    /**
-     * Pour les rappels personnels récurrents dont la date/heure est dépassée
-     * et qui ne sont pas encore "faits" : clôture l'occurrence courante et
-     * génère la suivante (même logique que markAsCompleted). Ainsi un rappel
-     * sans argent n'attend pas un clic "Fait" pour avancer.
+     * For recurring personal reminders whose date/time has passed and that are not
+     * "done" yet: closes the current occurrence and generates the next one (same logic
+     * as markAsCompleted), so a reminder without money does not wait for a "Done" click
+     * to move on. Paused reminders are ignored.
      */
     @Transactional
     public int rollForwardOverdueRecurring(java.time.LocalDate today, java.time.LocalDateTime now) {
         java.util.List<PersonalReminder> active = reminderRepository.findAll().stream()
                 .filter(r -> !r.isCompleted())
+                .filter(r -> !r.isPaused())
                 .filter(r -> r.getRepetitionType() != null && r.getRepetitionType() != RepetitionType.NONE)
                 .filter(r -> r.getDueDate() != null && !r.getDueDate().isAfter(today))
                 .toList();
 
         int rolled = 0;
         for (PersonalReminder start : active) {
-            // Rattrapage multi-occurrences : si 5 jours de DAILY manqués, on
-            // enchaîne jusqu'à une échéance future (ou aujourd'hui pas encore due).
+            // Multi-occurrence catch-up: if 5 days of a DAILY reminder were missed, keep
+            // going until a future due date (or today, not due yet).
             Long currentId = start.getId();
             int safety = 0;
             while (currentId != null && safety++ < 400) {
                 PersonalReminder current = reminderRepository.findById(currentId).orElse(null);
-                if (current == null || current.isCompleted()) {
+                if (current == null || current.isCompleted() || current.isPaused()) {
                     break;
                 }
                 if (current.getRepetitionType() == null || current.getRepetitionType() == RepetitionType.NONE) {
@@ -233,7 +290,7 @@ public class ReminderService {
                 java.time.LocalTime time = current.getDueTime() != null
                         ? current.getDueTime() : java.time.LocalTime.of(8, 0);
                 java.time.LocalDateTime trigger = current.getDueDate().atTime(time);
-                // Pas encore l'heure (aujourd'hui plus tard) → stop
+                // Not time yet (later today) -> stop
                 if (now.isBefore(trigger)) {
                     break;
                 }
@@ -245,7 +302,7 @@ public class ReminderService {
                 if (nextDate == null) {
                     break;
                 }
-                // Nouvelle occurrence créée par markAsCompleted : on la retrouve
+                // New occurrence created by markAsCompleted: find it again
                 final LocalDate nd = nextDate;
                 final Long userId = current.getUser().getId();
                 final String title = current.getTitle();
@@ -265,6 +322,7 @@ public class ReminderService {
         return rolled;
     }
 
+    /** Computes the next occurrence date according to the recurrence type. */
     private LocalDate computeNextOccurrence(LocalDate currentDueDate, RepetitionType repetitionType) {
         if (currentDueDate == null) {
             throw new InvalidArgumentException("Impossible de calculer la prochaine occurrence : due_date est nulle.");

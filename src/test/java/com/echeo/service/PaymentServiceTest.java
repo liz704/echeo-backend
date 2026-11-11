@@ -45,6 +45,8 @@ class PaymentServiceTest {
     private NotificationLogRepository notificationLogRepository;
     @Mock
     private EmailService emailService;
+    @Mock
+    private NotificationDispatchService dispatchService;
 
     @InjectMocks
     private PaymentService paymentService;

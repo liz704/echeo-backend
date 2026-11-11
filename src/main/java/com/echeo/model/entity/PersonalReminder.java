@@ -18,8 +18,8 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 
 /**
- * Rappel personnel créé par un utilisateur, avec gestion de récurrence
- * (repetition_type) et calcul de la prochaine occurrence (next_occurrence).
+ * Personal reminder created by a user, with recurrence handling
+ * (repetition_type) and computation of the next occurrence (next_occurrence).
  */
 @Entity
 @Table(name = "personal_reminders")
@@ -30,9 +30,9 @@ public class PersonalReminder {
     @Column(name = "id")
     private Long id;
 
-    // Chargement paresseux : on ne veut pas remonter tout l'utilisateur
-    // à chaque lecture de rappel. On ignore ses collections lors de la sérialisation
-    // pour éviter toute boucle JSON et n'exposer que les champs utiles.
+    // Lazy loading: we do not want to load the whole user on every reminder read.
+    // Its collections are ignored during serialization to avoid JSON loops and
+    // to expose only the useful fields.
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     @JsonIgnoreProperties({"passwordHash"})
@@ -60,16 +60,20 @@ public class PersonalReminder {
     @Column(name = "next_occurrence")
     private LocalDate nextOccurrence;
 
-    // Horodatage du dernier envoi effectif du rappel par email (null tant
-    // qu'aucun envoi n'a eu lieu). Remis à null à chaque modification de
-    // date/heure pour que le rappel soit ré-armé. Voir
-    // PersonalReminderNotificationService.
+    // A paused reminder stays in the active list but sends no e-mail and is never
+    // rolled forward automatically (see ReminderService.pauseReminder / resumeReminder).
+    @Column(name = "is_paused", nullable = false)
+    private boolean paused = false;
+
+    // Timestamp of the last e-mail actually sent for this reminder (null until one
+    // is sent). Reset to null whenever the date/time changes so the reminder is
+    // re-armed. See PersonalReminderNotificationService.
     @Column(name = "notification_sent_at")
     private java.time.OffsetDateTime notificationSentAt;
 
-    // Jeton public permettant de marquer ce rappel comme fait directement
-    // depuis un lien dans l'email, sans authentification. Généré une seule
-    // fois à la création (voir ReminderService.createReminder).
+    // Public token allowing the reminder to be marked as done straight from a link
+    // in the e-mail, without authentication. Generated once at creation
+    // (see ReminderService.createReminder).
     @Column(name = "public_completion_token", unique = true)
     private java.util.UUID publicCompletionToken;
 
@@ -160,6 +164,14 @@ public class PersonalReminder {
 
     public void setNextOccurrence(LocalDate nextOccurrence) {
         this.nextOccurrence = nextOccurrence;
+    }
+
+    public boolean isPaused() {
+        return paused;
+    }
+
+    public void setPaused(boolean paused) {
+        this.paused = paused;
     }
 
     public java.time.OffsetDateTime getNotificationSentAt() {
